@@ -1,7 +1,7 @@
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { createPool, withTenant } from '../../src/db.js'
-import { NotFoundError, PermissionDeniedError } from '../../src/errors.js'
+import { NotFoundError, PermissionDeniedError, ValidationError } from '../../src/errors.js'
 import { RecordKernel } from '../../src/kernel.js'
 import {
   addProjectMember,
@@ -170,48 +170,33 @@ describe('defaults', () => {
   })
 })
 
-describe('record types that belong to one side of the contract', () => {
-  const TYPE_KEY = 'test_tm_ticket'
+describe('T&M tickets, the first type that belongs to one side of the contract', () => {
+  const TYPE_KEY = 't_and_m_ticket'
 
-  beforeAll(async () => {
-    await pool.query(
-      `INSERT INTO record_types (key, tool_key, display_name, display_name_plural, number_prefix,
-                                 definition, creatable_by_org_kinds)
-            VALUES ($1, 'punch_list', 'T&M Ticket', 'T&M Tickets', 'TM', $2, ARRAY['specialty_contractor']::organization_kind[])
-       ON CONFLICT (key) DO NOTHING`,
-      [
-        TYPE_KEY,
-        JSON.stringify({
-          fields: [{ key: 'hours', label: 'Hours', type: 'number', required: true }],
-          workflow: {
-            initial: 'open',
-            states: [
-              { key: 'open', label: 'Open', ballInCourt: 'creator' },
-              { key: 'signed', label: 'Signed', terminal: true, ballInCourt: 'none' },
-            ],
-            transitions: [{ key: 'sign', label: 'Sign', from: ['open'], to: 'signed', requires: { level: 'standard' } }],
-          },
-        }),
-      ],
-    )
-    clearRecordTypeCache()
-  })
+  const ticket = {
+    work_date: '2026-09-17',
+    description: 'Cut and patch the slab at grid C4 to reach the buried conduit.',
+    authorized_by: 'Sam Ruiz, Superintendent',
+    labor_hours: 6,
+    labor_detail: 'Two journeymen, three hours each.',
+  }
 
-  it('lets the company it is about raise one', async () => {
+  it('lets the subcontractor raise one', async () => {
     const kernel = new RecordKernel(pool)
     const created = await kernel.create(
       { tenantId, userId: subPm },
-      { projectId, typeKey: TYPE_KEY, title: 'Extra hours, grid C4 rework', body: { hours: 6 } },
+      { projectId, typeKey: TYPE_KEY, title: 'Extra work at grid C4', body: ticket },
     )
     expect(created.record.designation).toMatch(/^TM-\d{3}$/)
+    expect(created.record.status).toBe('draft')
   })
 
-  it('refuses the general contractor, who reads these rather than writes them', async () => {
+  it('refuses the general contractor, who signs these rather than writes them', async () => {
     const kernel = new RecordKernel(pool)
     await expect(
       kernel.create(
         { tenantId, userId: gcPm },
-        { projectId, typeKey: TYPE_KEY, title: 'Hours on behalf of the sub', body: { hours: 6 } },
+        { projectId, typeKey: TYPE_KEY, title: 'Hours on behalf of the sub', body: ticket },
       ),
     ).rejects.toBeInstanceOf(PermissionDeniedError)
   })
@@ -230,14 +215,60 @@ describe('record types that belong to one side of the contract', () => {
       return id
     })
 
-    // A GC admin filing a sub's T&M ticket would be forging a claim about
-    // somebody else's crew. No level of access makes that correct.
+    // A GC admin filing a sub's T&M ticket would be asserting something about
+    // somebody else's payroll. No level of access makes that correct.
     const kernel = new RecordKernel(pool)
     await expect(
       kernel.create(
         { tenantId, userId: adminId },
-        { projectId, typeKey: TYPE_KEY, title: 'Admin override', body: { hours: 6 } },
+        { projectId, typeKey: TYPE_KEY, title: 'Admin override', body: ticket },
       ),
     ).rejects.toBeInstanceOf(PermissionDeniedError)
+  })
+
+  it('runs the whole ticket: submitted, disputed, answered, signed', async () => {
+    const kernel = new RecordKernel(pool)
+    const sub = { tenantId, userId: subPm }
+    const gc = { tenantId, userId: gcPm }
+
+    const created = await kernel.create(sub, {
+      projectId,
+      typeKey: TYPE_KEY,
+      title: 'Dewatering at the north footing',
+      body: ticket,
+      participants: [{ userId: gcPm, role: 'approver' }],
+    })
+
+    // Submitting puts it in the signer's court with a clock on it, because an
+    // unsigned ticket a week later is an argument rather than a claim.
+    const submitted = await kernel.transition(sub, created.record.id, { transitionKey: 'submit' })
+    expect(submitted.record.status).toBe('submitted')
+    expect(submitted.assignment?.holderUserId).toBe(gcPm)
+    expect(submitted.assignment?.dueAt).toBeTruthy()
+
+    // The sub cannot sign their own ticket.
+    await expect(
+      kernel.transition(sub, created.record.id, { transitionKey: 'sign' }),
+    ).rejects.toBeInstanceOf(PermissionDeniedError)
+
+    // A dispute must say why, and hands the ball straight back rather than
+    // leaving the ticket in limbo.
+    await expect(
+      kernel.transition(gc, created.record.id, { transitionKey: 'dispute' }),
+    ).rejects.toBeInstanceOf(ValidationError)
+
+    const disputed = await kernel.transition(gc, created.record.id, {
+      transitionKey: 'dispute',
+      body: { dispute_reason: 'Two hours of this is inside the base scope.' },
+    })
+    expect(disputed.record.status).toBe('disputed')
+    expect(disputed.assignment?.holderUserId).toBe(subPm)
+
+    const resubmitted = await kernel.transition(sub, created.record.id, { transitionKey: 'submit' })
+    expect(resubmitted.record.status).toBe('submitted')
+
+    const signed = await kernel.transition(gc, created.record.id, { transitionKey: 'sign' })
+    expect(signed.record.status).toBe('signed')
+    expect(signed.assignment).toBeNull()
   })
 })
