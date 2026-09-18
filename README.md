@@ -42,12 +42,15 @@ Grounding is confined by the same row-level security as a human. The type regist
 
 Every model call is costed per tenant at the time it ran, and every accepted proposal records whether the human had to edit it first. `acceptedUnedited / accepted` is the quality metric for the pipeline: an agent whose drafts always need fixing is costing the field time, not saving it.
 
+**The web client.** Three page templates and twelve components, not a design system. There is no RFI screen in the codebase: the tabs are record types from the registry, the forms are the type's own fields, and the action bar is `availableTransitions` — what the server says *this* person may run. A test proves it the only way that means anything, by inserting a record type the client has never heard of and driving it through the same screens.
+
 ## Layout
 
 ```
 db/       Postgres schema and migration runner
 shared/   the kernel: types, workflow engine, permissions, repositories
 api/      HTTP surface over the kernel
+web/      the client: three page templates, rendered from the registry
 eval/     the capture interpreter's eval suite
 docs/     the Procore teardown this is built from
 ```
@@ -94,6 +97,8 @@ POST   /records/:id/comments
 GET    /records/:id/history
 GET    /ball-in-court             ?projectId= &holderUserId= &overdue=true
 
+GET    /projects/:id/members      the project team, for assigning a record
+
 POST   /projects/:id/captures     signal in; the cheapest call in the system
 GET    /captures/:id
 POST   /captures/:id/interpret    draft the record this signal should become
@@ -107,9 +112,17 @@ GET    /projects/:id/capture-stats
 
 It scores the real code path: the prompt is built by the same functions the product calls, from types loaded out of the database, so a migration that changes a record type changes the eval too. Every run prints its own noise floor, and the regression gate uses it as the default tolerance. And `--export` turns proposals a human edited before accepting into new cases whose gold answer is the human's correction, which is how the suite keeps matching real traffic. See [`eval/README.md`](eval/README.md).
 
+## The client
+
+`npm run dev:web` serves it on :5173 and proxies `/api` to the API, so the browser stays on one origin.
+
+The whole visual language is `web/src/ui` (twelve components and a token file) plus `web/src/layouts` (two page templates). That split is the teardown's finding applied: Procore does not look coherent because it ships 103 components, it looks coherent because a record list and a record each have exactly one layout across every tool. Coherence comes from the templates; the component set stays small enough that nobody reinvents a button.
+
+Every screen renders from two server responses and hard-codes neither: the record type registry, and the permission map from `/me?projectId=`. A trade partner does not see a Daily Logs tab, an architect does not see a Close button, and neither is a decision the client makes — the server computes both and the client draws what it was told. It re-checks everything anyway, but a button that always fails is its own kind of broken.
+
 ## What is deliberately not here yet
 
-In blueprint order: the entity graph and scoped retrieval, the financial spine (a configurable budget code of named segments), offline predictive sync, and the web client.
+In blueprint order: the entity graph and scoped retrieval, the financial spine (a configurable budget code of named segments), and offline predictive sync.
 
 One gap inside the capture pipeline: transcription and OCR are not wired. A capture arrives with its `text` already extracted, and the step that turns audio and pixels into text is a separate provider call in front of the interpreter.
 

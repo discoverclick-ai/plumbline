@@ -26,9 +26,14 @@ export async function loadRecordTypes(db: Db): Promise<Map<string, RecordType>> 
     definition: unknown
     version: number
   }>(
-    `SELECT key, tool_key, display_name, display_name_plural, number_prefix, definition, version
-       FROM record_types
-      ORDER BY key`,
+    // Ordered by the tool's own sort order, not alphabetically by key: this is
+    // the order the tabs appear in, and "Daily Logs" leading because 'd' sorts
+    // first is not an ordering anybody on a jobsite would recognise.
+    `SELECT rt.key, rt.tool_key, rt.display_name, rt.display_name_plural, rt.number_prefix,
+            rt.definition, rt.version
+       FROM record_types rt
+       JOIN tools t ON t.key = rt.tool_key
+      ORDER BY t.sort_order, rt.key`,
   )
 
   const types = new Map<string, RecordType>()

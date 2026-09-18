@@ -126,6 +126,9 @@ const ROUTES: Route[] = [
           label: t.label,
           from: t.from,
           to: t.to,
+          // What the client must collect before offering this move. Without it
+          // a UI either asks for every field on every transition or guesses.
+          requiresFields: t.requiresFields ?? [],
         })),
       })),
     }
@@ -149,6 +152,32 @@ const ROUTES: Route[] = [
             [actor.userId],
           )
       return { projects: rows }
+    }),
+  ),
+
+  /**
+   * The project team. A client needs this to put a person on a record, and a
+   * record type whose next state hands the ball to an assignee cannot move
+   * without one — so a UI that cannot pick people can create records that
+   * dead-end.
+   */
+  route('GET', '/projects/:projectId/members', async ({ db, actor, params }) =>
+    withTenant(db, actor.tenantId, async (tx) => {
+      const projectId = params['projectId'] as string
+      const access = await loadAccess(tx, { userId: actor.userId, tenantId: actor.tenantId, projectId })
+      if (!access.isProjectMember && !access.isCompanyAdmin) {
+        throw new KernelError('permission_denied', 'You are not on this project', 403)
+      }
+      const { rows } = await tx.query(
+        `SELECT u.id AS "userId", u.name, u.job_title AS "jobTitle", o.name AS organization
+           FROM project_memberships m
+           JOIN users u ON u.id = m.user_id
+           JOIN organizations o ON o.id = u.organization_id
+          WHERE m.project_id = $1 AND u.is_active
+          ORDER BY o.name, u.name`,
+        [projectId],
+      )
+      return { members: rows }
     }),
   ),
 

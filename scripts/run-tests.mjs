@@ -23,7 +23,8 @@
  * lifecycle hooks — a package's own `pretest` does NOT run here (it only fires
  * on `npm test -w <pkg>`). Anything that must be built before the suites run
  * belongs in the ROOT `pretest`: today that is `shared`, which `api` imports as
- * a package. A clean clone is the check that catches a miss here.
+ * a package, and `api` itself, whose `dist/server.js` the web tests boot.
+ * A clean clone is the check that catches a miss here.
  */
 
 import { spawn } from 'node:child_process'
@@ -38,6 +39,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const PACKAGES = [
   { name: '@plumbline/shared', dir: 'shared' },
   { name: '@plumbline/api', dir: 'api' },
+  { name: '@plumbline/web', dir: 'web' },
 ]
 
 function runVitest(cwd, reportPath) {

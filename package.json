@@ -6,16 +6,18 @@
   "workspaces": [
     "db",
     "shared",
-    "api"
+    "api",
+    "web"
   ],
   "scripts": {
-    "build": "npm run build -w @plumbline/shared && npm run build -w @plumbline/api",
-    "pretest": "npm run build -w @plumbline/shared",
+    "build": "npm run build -w @plumbline/shared && npm run build -w @plumbline/api && npm run build -w @plumbline/web",
+    "pretest": "npm run build -w @plumbline/shared && npm run build -w @plumbline/api",
     "test": "node scripts/run-tests.mjs",
-    "typecheck": "npm run typecheck -w @plumbline/shared && npm run typecheck -w @plumbline/api",
+    "typecheck": "npm run typecheck -w @plumbline/shared && npm run typecheck -w @plumbline/api && npm run typecheck -w @plumbline/web",
     "migrate": "npm run migrate -w @plumbline/db",
     "provision:app-role": "node scripts/provision-app-role.mjs",
     "start": "npm run start -w @plumbline/api",
-    "eval:capture": "node eval/run.mjs"
+    "eval:capture": "node eval/run.mjs",
+    "dev:web": "npm run dev -w @plumbline/web"
   }
 }
