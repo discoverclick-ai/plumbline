@@ -537,10 +537,41 @@ function dedupeParticipants(
  * is the whole point of granular privileges — the superintendent who may read
  * everything and raise observations, but change nothing else.
  */
+export function canCreateType(access: AccessSnapshot, type: RecordType): boolean {
+  if (!orgKindMayCreate(access, type)) return false
+  if (hasLevel(access, type.toolKey, 'standard')) return true
+  return hasLevel(access, type.toolKey, 'read_only') && hasPrivilege(access, type.toolKey, 'create')
+}
+
+/**
+ * Some record types belong to one side of the contract. A T&M ticket is a
+ * claim about your own crew's hours, so a specialty contractor raises one and
+ * a general contractor reads it. Empty means every kind, which is every
+ * built-in type.
+ *
+ * Deliberately NOT waived for company administrators. This is not a privilege
+ * level, it is a statement about who the record is *about*, and a GC admin
+ * filing a sub's T&M ticket would be forging it.
+ */
+function orgKindMayCreate(access: AccessSnapshot, type: RecordType): boolean {
+  if (type.creatableByOrgKinds.length === 0) return true
+  return access.organizationKind !== null && type.creatableByOrgKinds.includes(access.organizationKind)
+}
+
 function assertCanCreate(access: AccessSnapshot, type: RecordType): void {
+  if (!orgKindMayCreate(access, type)) {
+    throw new PermissionDeniedError(
+      `${type.displayNamePlural} are raised by ${type.creatableByOrgKinds.map(describeOrgKind).join(' or ')}`,
+      { tool: type.toolKey },
+    )
+  }
   if (hasLevel(access, type.toolKey, 'standard')) return
   if (hasLevel(access, type.toolKey, 'read_only') && hasPrivilege(access, type.toolKey, 'create')) return
   throw new PermissionDeniedError(`You cannot create ${type.displayName} records`, { tool: type.toolKey })
+}
+
+function describeOrgKind(kind: string): string {
+  return kind.replace(/_/g, ' ') + 's'
 }
 
 async function assertProjectExists(tx: Db, projectId: string): Promise<void> {

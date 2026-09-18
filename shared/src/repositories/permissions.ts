@@ -1,6 +1,6 @@
 import type { Db } from '../db.js'
 import { buildAccess, type AccessSnapshot, type Grant } from '../permissions.js'
-import type { PermissionLevel, PermissionScope } from '../types.js'
+import type { OrganizationKind, PermissionLevel, PermissionScope } from '../types.js'
 
 /**
  * Loading an access snapshot. Every request does this exactly once, up front,
@@ -60,8 +60,14 @@ export interface LoadAccessInput {
 export async function loadAccess(db: Db, input: LoadAccessInput): Promise<AccessSnapshot> {
   const toolScopes = await loadToolScopes(db)
 
-  const { rows: userRows } = await db.query<{ company_permission_template_id: string | null }>(
-    'SELECT company_permission_template_id FROM users WHERE id = $1 AND is_active',
+  const { rows: userRows } = await db.query<{
+    company_permission_template_id: string | null
+    organization_kind: OrganizationKind
+  }>(
+    `SELECT u.company_permission_template_id, o.kind AS organization_kind
+       FROM users u
+       JOIN organizations o ON o.id = u.organization_id
+      WHERE u.id = $1 AND u.is_active`,
     [input.userId],
   )
   const userRow = userRows[0]
@@ -71,6 +77,7 @@ export async function loadAccess(db: Db, input: LoadAccessInput): Promise<Access
       userId: input.userId,
       tenantId: input.tenantId,
       projectId: input.projectId,
+      organizationKind: null,
       toolScopes,
       companyGrants: [],
       projectGrants: [],
@@ -101,6 +108,7 @@ export async function loadAccess(db: Db, input: LoadAccessInput): Promise<Access
     userId: input.userId,
     tenantId: input.tenantId,
     projectId: input.projectId,
+    organizationKind: userRow.organization_kind,
     toolScopes,
     companyGrants,
     projectGrants,

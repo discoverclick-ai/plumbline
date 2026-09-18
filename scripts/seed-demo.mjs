@@ -125,7 +125,7 @@ const cast = await withTenant(pool, tenant.tenantId, async (tx) => {
       await addProjectMember(tx, tenant.tenantId, {
         projectId,
         userId,
-        permissionTemplateId: await findTemplateByName(tx, tenant.tenantId, 'project', template),
+        permissionTemplateName: template,
       })
     }
   }

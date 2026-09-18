@@ -46,7 +46,7 @@ async function seed(name: string): Promise<Fixture> {
     await addProjectMember(tx, tenant.tenantId, {
       projectId: id,
       userId: tenant.adminUserId,
-      permissionTemplateId: await findTemplateByName(tx, tenant.tenantId, 'project', 'Project Manager'),
+      permissionTemplateName: 'Project Manager',
     })
     return id
   })
@@ -62,8 +62,11 @@ async function seed(name: string): Promise<Fixture> {
     },
   )
 
+  // The tenant admin is in the tenant's own organization, a general
+  // contractor, so this resolves to the GC's Project Manager rather than the
+  // owner's or the sub's.
   const templateId = await withTenant(superPool, tenant.tenantId, (tx) =>
-    findTemplateByName(tx, tenant.tenantId, 'project', 'Project Manager'),
+    findTemplateByName(tx, tenant.tenantId, 'project', 'Project Manager', 'general_contractor'),
   )
 
   return { tenantId: tenant.tenantId, projectId, recordId: created.record.id, templateId }

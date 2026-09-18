@@ -257,7 +257,7 @@ describe('exportCasesFromProduction', () => {
       await addProjectMember(tx, tenant.tenantId, {
         projectId: project,
         userId: user,
-        permissionTemplateId: await findTemplateByName(tx, tenant.tenantId, 'project', 'Superintendent'),
+        permissionTemplateName: 'Superintendent',
       })
       return { projectId: project, userId: user }
     })

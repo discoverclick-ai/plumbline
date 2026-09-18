@@ -1,5 +1,6 @@
 import { ValidationError, type FieldIssue } from './errors.js'
 import type { ParticipantRole, PermissionLevel } from './types.js'
+import type { OrganizationKind } from './types.js'
 
 /**
  * A record type is a whole tool expressed as data: the fields a user fills in,
@@ -78,6 +79,13 @@ export interface RecordType {
   displayNamePlural: string
   numberPrefix: string
   version: number
+  /**
+   * Organization kinds whose users may CREATE this type. Empty means every
+   * kind, which is the case for all five built-ins. A sub bills time and
+   * materials and a general contractor does not, so a T&M ticket is raisable
+   * by one and merely readable by the other.
+   */
+  creatableByOrgKinds: OrganizationKind[]
   definition: RecordTypeDefinition
 }
 

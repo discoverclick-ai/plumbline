@@ -109,7 +109,16 @@ export async function seedProject(pool: Pool, tenantId: string, label: string): 
       name: `${label} Mechanical`,
       kind: 'specialty_contractor',
     })
-    const self = await tx.query<{ id: string }>('SELECT id FROM organizations WHERE is_self LIMIT 1')
+    // Explicitly tenant-filtered. This pool is a superuser, so row-level
+    // security does not confine it, and with two suites provisioning tenants
+    // into one database an unfiltered `WHERE is_self` happily returns the
+    // OTHER suite's company. That put this project's people in another
+    // tenant's organization, which stayed invisible until something joined
+    // users to organizations.
+    const self = await tx.query<{ id: string }>(
+      'SELECT id FROM organizations WHERE tenant_id = $1 AND is_self LIMIT 1',
+      [tenantId],
+    )
     const selfOrg = self.rows[0]?.id as string
 
     const employee = await findTemplateByName(tx, tenantId, 'company', 'Employee')
@@ -149,7 +158,7 @@ export async function seedProject(pool: Pool, tenantId: string, label: string): 
       await addProjectMember(tx, tenantId, {
         projectId,
         userId,
-        permissionTemplateId: await findTemplateByName(tx, tenantId, 'project', template),
+        permissionTemplateName: template,
       })
     }
 

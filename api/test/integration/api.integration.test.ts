@@ -127,7 +127,7 @@ beforeAll(async () => {
       await addProjectMember(tx, tenant.tenantId, {
         projectId,
         userId,
-        permissionTemplateId: await findTemplateByName(tx, tenant.tenantId, 'project', template),
+        permissionTemplateName: template,
       })
     }
   })

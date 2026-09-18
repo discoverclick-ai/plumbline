@@ -1,6 +1,7 @@
 import type { Db } from '../db.js'
 import { NotFoundError } from '../errors.js'
 import { parseRecordTypeDefinition, type RecordType } from '../record-type.js'
+import type { OrganizationKind } from '../types.js'
 
 /**
  * The type registry. Definitions live in the database (migration 0004) so a
@@ -25,12 +26,13 @@ export async function loadRecordTypes(db: Db): Promise<Map<string, RecordType>> 
     number_prefix: string
     definition: unknown
     version: number
+    creatable_by_org_kinds: OrganizationKind[]
   }>(
     // Ordered by the tool's own sort order, not alphabetically by key: this is
     // the order the tabs appear in, and "Daily Logs" leading because 'd' sorts
     // first is not an ordering anybody on a jobsite would recognise.
     `SELECT rt.key, rt.tool_key, rt.display_name, rt.display_name_plural, rt.number_prefix,
-            rt.definition, rt.version
+            rt.definition, rt.version, rt.creatable_by_org_kinds::text[] AS creatable_by_org_kinds
        FROM record_types rt
        JOIN tools t ON t.key = rt.tool_key
       ORDER BY t.sort_order, rt.key`,
@@ -46,6 +48,7 @@ export async function loadRecordTypes(db: Db): Promise<Map<string, RecordType>> 
         displayNamePlural: row.display_name_plural,
         numberPrefix: row.number_prefix,
         version: row.version,
+        creatableByOrgKinds: row.creatable_by_org_kinds ?? [],
         definition: parseRecordTypeDefinition(row.definition),
       })
     } catch (err) {

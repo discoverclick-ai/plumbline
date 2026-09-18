@@ -15,6 +15,17 @@ import type { OrganizationKind, PermissionLevel, PermissionScope, ProjectStage }
 export interface TemplateSpec {
   name: string
   scope: PermissionScope
+  /**
+   * Which kinds of company this template is written for. Omitted means every
+   * kind, and that universal template is the fallback when nothing matches.
+   *
+   * Procore's certification catalogue teaches "Project Manager" three separate
+   * times, once for an owner, once for a general contractor and once for a
+   * specialty contractor, because the same title does a different job on each
+   * side of the contract. A single Project Manager template was therefore
+   * wrong for two thirds of the people handed it.
+   */
+  appliesTo?: OrganizationKind[]
   isDefault?: boolean
   tools: { toolKey: string; level: PermissionLevel; privileges?: string[] }[]
 }
@@ -44,8 +55,11 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
     tools: [{ toolKey: 'directory', level: 'read_only' }],
   },
   {
+    // The general contractor's PM: runs the job, holds every workflow, and is
+    // the only one of the three who closes things out.
     name: 'Project Manager',
     scope: 'project',
+    appliesTo: ['general_contractor'],
     tools: [
       { toolKey: 'rfis', level: 'standard', privileges: ['create', 'respond', 'close'] },
       { toolKey: 'submittals', level: 'standard', privileges: ['create', 'review'] },
@@ -58,8 +72,45 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
     ],
   },
   {
+    // The owner's PM watches and approves. They do not raise RFIs against
+    // their own project and they do not close a contractor's punch item,
+    // because accepting the work is the point of the punch list.
+    name: 'Project Manager',
+    scope: 'project',
+    appliesTo: ['owner'],
+    tools: [
+      { toolKey: 'rfis', level: 'read_only' },
+      { toolKey: 'submittals', level: 'read_only' },
+      { toolKey: 'punch_list', level: 'read_only', privileges: ['create'] },
+      { toolKey: 'observations', level: 'standard', privileges: ['create'] },
+      { toolKey: 'daily_log', level: 'read_only' },
+      { toolKey: 'capture', level: 'read_only' },
+      { toolKey: 'documents', level: 'read_only' },
+      { toolKey: 'project_team', level: 'read_only' },
+    ],
+  },
+  {
+    // The subcontractor's PM: raises questions and submittals for their own
+    // scope, fixes their own punch work, and sees no part of the job that is
+    // not theirs. Same title as the GC's PM, barely any overlap.
+    name: 'Project Manager',
+    scope: 'project',
+    appliesTo: ['specialty_contractor'],
+    tools: [
+      { toolKey: 'rfis', level: 'standard', privileges: ['create'] },
+      { toolKey: 'submittals', level: 'standard', privileges: ['create'] },
+      { toolKey: 'punch_list', level: 'standard' },
+      { toolKey: 'observations', level: 'read_only' },
+      { toolKey: 'daily_log', level: 'none' },
+      { toolKey: 'capture', level: 'standard', privileges: ['review'] },
+      { toolKey: 'documents', level: 'read_only' },
+      { toolKey: 'project_team', level: 'read_only' },
+    ],
+  },
+  {
     name: 'Superintendent',
     scope: 'project',
+    appliesTo: ['general_contractor'],
     tools: [
       { toolKey: 'rfis', level: 'standard', privileges: ['create'] },
       { toolKey: 'submittals', level: 'read_only' },
@@ -76,6 +127,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
     // see nothing else. This template is why unlimited users is affordable.
     name: 'Trade Partner',
     scope: 'project',
+    appliesTo: ['specialty_contractor', 'supplier'],
     isDefault: true,
     tools: [
       { toolKey: 'rfis', level: 'read_only', privileges: ['create'] },
@@ -91,6 +143,8 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
   {
     name: 'Design Team',
     scope: 'project',
+    appliesTo: ['architect', 'engineer', 'consultant'],
+    isDefault: true,
     tools: [
       { toolKey: 'rfis', level: 'standard', privileges: ['respond'] },
       { toolKey: 'submittals', level: 'standard', privileges: ['review'] },
@@ -102,8 +156,14 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
     ],
   },
   {
+    // The universal fallback, and deliberately the least privileged one. A
+    // person from a company we have no template for gets to look and nothing
+    // else, until an administrator says otherwise. Defaulting a general
+    // contractor's new hire straight to Project Manager would be the wrong
+    // way round.
     name: 'Read Only',
     scope: 'project',
+    isDefault: true,
     tools: [
       { toolKey: 'rfis', level: 'read_only' },
       { toolKey: 'submittals', level: 'read_only' },
@@ -119,10 +179,10 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
 
 export async function createTemplate(db: Db, tenantId: string, spec: TemplateSpec): Promise<string> {
   const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO permission_templates (tenant_id, scope, name, is_default)
-          VALUES ($1, $2, $3, $4)
+    `INSERT INTO permission_templates (tenant_id, scope, name, is_default, applies_to_org_kinds)
+          VALUES ($1, $2, $3, $4, $5)
        RETURNING id`,
-    [tenantId, spec.scope, spec.name, spec.isDefault === true],
+    [tenantId, spec.scope, spec.name, spec.isDefault === true, spec.appliesTo ?? []],
   )
   const template = rows[0]
   if (!template) throw new Error('template insert returned no row')
@@ -278,10 +338,29 @@ export async function createProject(
 export async function addProjectMember(
   db: Db,
   tenantId: string,
-  input: { projectId: string; userId: string; permissionTemplateId?: string | null },
+  input: {
+    projectId: string
+    userId: string
+    /** An explicit template. Wins over everything, including as an explicit null. */
+    permissionTemplateId?: string | null
+    /**
+     * A template by name, resolved against THIS member's own company. Prefer
+     * this over looking the id up yourself: a name like "Project Manager" now
+     * belongs to several templates that differ only by audience, and picking
+     * the wrong one is silent.
+     */
+    permissionTemplateName?: string
+  },
 ): Promise<void> {
+  const orgKind =
+    input.permissionTemplateId === undefined ? await organizationKindOfUser(db, input.userId) : undefined
+
   const templateId =
-    input.permissionTemplateId === undefined ? await defaultTemplateId(db, tenantId, 'project') : input.permissionTemplateId
+    input.permissionTemplateId !== undefined
+      ? input.permissionTemplateId
+      : input.permissionTemplateName
+        ? await findTemplateByName(db, tenantId, 'project', input.permissionTemplateName, orgKind)
+        : await defaultTemplateId(db, tenantId, 'project', orgKind)
 
   await db.query(
     `INSERT INTO project_memberships (tenant_id, project_id, user_id, permission_template_id)
@@ -302,20 +381,73 @@ export async function findTemplateByName(
   tenantId: string,
   scope: PermissionScope,
   name: string,
+  orgKind?: OrganizationKind,
 ): Promise<string> {
-  const { rows } = await db.query<{ id: string }>(
-    'SELECT id FROM permission_templates WHERE tenant_id = $1 AND scope = $2 AND name = $3',
+  const { rows } = await db.query<{ id: string; applies_to_org_kinds: OrganizationKind[] }>(
+    `SELECT id, applies_to_org_kinds::text[] AS applies_to_org_kinds
+       FROM permission_templates
+      WHERE tenant_id = $1 AND scope = $2 AND name = $3`,
     [tenantId, scope, name],
   )
-  const row = rows[0]
-  if (!row) throw new NotFoundError('permission template', name)
-  return row.id
+  if (rows.length === 0) throw new NotFoundError('permission template', name)
+
+  const chosen = pickForOrgKind(rows, orgKind)
+  if (chosen) return chosen.id
+
+  // A name can now belong to several templates that differ only by audience,
+  // so an unqualified lookup that matches more than one is ambiguous. Picking
+  // the first row would hand somebody a plausible-looking set of permissions
+  // written for a different kind of company, which is the sort of thing nobody
+  // notices until a sub can close the owner's punch items.
+  throw new NotFoundError(
+    'permission template',
+    orgKind
+      ? `${name} (for ${orgKind}; candidates are ${describeAudiences(rows)})`
+      : `${name} (ambiguous without an organization kind; candidates are ${describeAudiences(rows)})`,
+  )
 }
 
-async function defaultTemplateId(db: Db, tenantId: string, scope: PermissionScope): Promise<string | null> {
-  const { rows } = await db.query<{ id: string }>(
-    'SELECT id FROM permission_templates WHERE tenant_id = $1 AND scope = $2 AND is_default',
+async function defaultTemplateId(
+  db: Db,
+  tenantId: string,
+  scope: PermissionScope,
+  orgKind?: OrganizationKind,
+): Promise<string | null> {
+  const { rows } = await db.query<{ id: string; applies_to_org_kinds: OrganizationKind[] }>(
+    `SELECT id, applies_to_org_kinds::text[] AS applies_to_org_kinds
+       FROM permission_templates
+      WHERE tenant_id = $1 AND scope = $2 AND is_default`,
     [tenantId, scope],
   )
-  return rows[0]?.id ?? null
+  return pickForOrgKind(rows, orgKind)?.id ?? null
+}
+
+/**
+ * A template written for this kind of company wins; the universal one (empty
+ * audience) is the fallback. With no kind to go on, only an unambiguous single
+ * candidate is returned, and the caller decides what to do about the rest.
+ */
+function pickForOrgKind<T extends { applies_to_org_kinds: OrganizationKind[] }>(
+  rows: T[],
+  orgKind: OrganizationKind | undefined,
+): T | null {
+  if (orgKind) {
+    const specific = rows.find((r) => r.applies_to_org_kinds.includes(orgKind))
+    if (specific) return specific
+  }
+  const universal = rows.find((r) => r.applies_to_org_kinds.length === 0)
+  if (universal) return universal
+  return rows.length === 1 ? (rows[0] as T) : null
+}
+
+function describeAudiences(rows: { applies_to_org_kinds: OrganizationKind[] }[]): string {
+  return rows.map((r) => (r.applies_to_org_kinds.length === 0 ? 'any company' : r.applies_to_org_kinds.join('/'))).join(', ')
+}
+
+async function organizationKindOfUser(db: Db, userId: string): Promise<OrganizationKind | undefined> {
+  const { rows } = await db.query<{ kind: OrganizationKind }>(
+    `SELECT o.kind FROM users u JOIN organizations o ON o.id = u.organization_id WHERE u.id = $1`,
+    [userId],
+  )
+  return rows[0]?.kind
 }

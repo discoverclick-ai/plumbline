@@ -1,6 +1,6 @@
 import { PermissionDeniedError } from './errors.js'
 import type { TransitionSpec } from './record-type.js'
-import type { ParticipantRole, PermissionLevel, PermissionScope } from './types.js'
+import type { OrganizationKind, ParticipantRole, PermissionLevel, PermissionScope } from './types.js'
 
 /**
  * Permission resolution, in one place.
@@ -50,6 +50,13 @@ export interface AccessSnapshot {
   userId: string
   tenantId: string
   projectId: string | null
+  /**
+   * The actor's own company. Null only when the user row could not be read,
+   * which is the same case that yields no access at all. Carried on the
+   * snapshot because some authorization decisions turn on which side of the
+   * contract you sit on, not on what you were granted.
+   */
+  organizationKind: OrganizationKind | null
   isCompanyAdmin: boolean
   isProjectMember: boolean
   tools: ReadonlyMap<string, ToolAccess>
@@ -59,6 +66,7 @@ export interface BuildAccessInput {
   userId: string
   tenantId: string
   projectId: string | null
+  organizationKind?: OrganizationKind | null
   /** Every tool the product ships, with its scope. From the `tools` table. */
   toolScopes: ReadonlyMap<string, PermissionScope>
   companyGrants: Grant[]
@@ -98,6 +106,7 @@ export function buildAccess(input: BuildAccessInput): AccessSnapshot {
     userId: input.userId,
     tenantId: input.tenantId,
     projectId: input.projectId,
+    organizationKind: input.organizationKind ?? null,
     isCompanyAdmin,
     isProjectMember: input.isProjectMember,
     tools,
