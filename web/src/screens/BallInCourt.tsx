@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { BallInCourtEntry } from '@plumbline/shared'
 import { ToolLandingPage } from '../layouts/index.js'
 import { useSession } from '../session/SessionProvider.tsx'
-import { Banner, Card, Initials, Pill, Spinner, Table } from '../ui/index.js'
+import { Banner, Card, Initials, Pill, Spinner, Table, Tabs } from '../ui/index.js'
 
 /**
  * The home screen: what you owe, oldest first.
@@ -22,6 +22,10 @@ export function BallInCourt({
   onOpenRecord: (recordId: string) => void
 }) {
   const { api, me } = useSession()
+  // Scoping to a project without also scoping to a person answers a different
+  // question — "what is open on this job" rather than "what do I owe" — and a
+  // screen titled "In your court" that lists other people's work is a lie.
+  const [scope, setScope] = useState<'mine' | 'everyone'>('mine')
   const [entries, setEntries] = useState<BallInCourtEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -30,7 +34,10 @@ export function BallInCourt({
     let cancelled = false
     setLoading(true)
     api
-      .ballInCourt(projectId ? { projectId } : {})
+      .ballInCourt({
+        ...(projectId ? { projectId } : {}),
+        ...(scope === 'mine' && me?.user ? { holderUserId: me.user.id } : {}),
+      })
       .then((result) => {
         if (!cancelled) setEntries(result.entries)
       })
@@ -43,14 +50,26 @@ export function BallInCourt({
     return () => {
       cancelled = true
     }
-  }, [api, projectId])
+  }, [api, projectId, scope, me?.user?.id])
 
   const overdue = entries.filter((entry) => entry.overdue).length
 
   return (
     <ToolLandingPage
-      title="In your court"
+      title={scope === 'mine' ? 'In your court' : 'Open across this project'}
       subtitle={me?.user ? `${me.user.name} · ${me.user.organization}` : undefined}
+      tabs={
+        projectId && (
+          <Tabs
+            active={scope}
+            onSelect={(key) => setScope(key as 'mine' | 'everyone')}
+            tabs={[
+              { key: 'mine', label: 'Mine' },
+              { key: 'everyone', label: 'Everyone' },
+            ]}
+          />
+        )
+      }
       banner={
         error ? (
           <Banner tone="danger">{error}</Banner>
@@ -105,6 +124,7 @@ export function BallInCourt({
                 key: 'holder',
                 header: 'Holder',
                 width: '160px',
+                secondary: scope === 'mine',
                 render: (row) => (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                     <Initials name={row.holderName} />

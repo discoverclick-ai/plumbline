@@ -1,5 +1,39 @@
-import type { CSSProperties, ReactNode } from 'react'
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import './tokens.css'
+
+/**
+ * Narrow enough that a four-column table turns into two words per line. The
+ * field opens this on a phone more often than on anything else, so the table
+ * has to stop being a table down here.
+ */
+export function useIsNarrow(breakpoint = 720): boolean {
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth <= breakpoint,
+  )
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    // matchMedia is the right instrument and jsdom does not implement it, so
+    // feature-detect rather than assume. Falling back to a resize listener
+    // keeps the component honest in a test environment instead of throwing
+    // inside a render.
+    if (typeof window.matchMedia === 'function') {
+      const query = window.matchMedia(`(max-width: ${breakpoint}px)`)
+      const update = () => setNarrow(query.matches)
+      update()
+      query.addEventListener('change', update)
+      return () => query.removeEventListener('change', update)
+    }
+
+    const update = () => setNarrow(window.innerWidth <= breakpoint)
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [breakpoint])
+
+  return narrow
+}
 
 /**
  * The component set. Twelve of them, deliberately.
@@ -234,6 +268,8 @@ export interface Column<Row> {
   key: string
   header: string
   width?: string
+  /** Hidden on narrow screens, where every line costs a scroll. */
+  secondary?: boolean
   render: (row: Row) => ReactNode
 }
 
@@ -250,7 +286,43 @@ export function Table<Row>({
   onRowClick?: (row: Row) => void
   empty?: ReactNode
 }) {
+  const narrow = useIsNarrow()
+
   if (rows.length === 0) return <>{empty ?? <EmptyState title="Nothing here yet" />}</>
+
+  // On a phone the same data reads as a stack: the first column is the
+  // heading, the rest are labelled lines. A four-column table at 390px wraps
+  // every cell to two words and is unusable through a glove.
+  if (narrow) {
+    const [lead, ...rest] = columns
+    return (
+      <div style={{ display: 'grid', gap: 'var(--space-3)' }}>
+        {rows.map((row) => (
+          <div
+            key={rowKey(row)}
+            onClick={onRowClick ? () => onRowClick(row) : undefined}
+            style={{
+              display: 'grid',
+              gap: 6,
+              padding: 'var(--space-3) 0',
+              borderBottom: '1px solid var(--line)',
+              cursor: onRowClick ? 'pointer' : 'default',
+            }}
+          >
+            {lead && <div style={{ fontWeight: 650 }}>{lead.render(row)}</div>}
+            {rest
+              .filter((column) => !column.secondary)
+              .map((column) => (
+                <div key={column.key} style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'baseline' }}>
+                  <span style={{ fontSize: 12, color: 'var(--ink-faint)', minWidth: 72 }}>{column.header}</span>
+                  <span style={{ minWidth: 0 }}>{column.render(row)}</span>
+                </div>
+              ))}
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>

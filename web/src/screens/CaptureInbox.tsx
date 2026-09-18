@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ApiError, type ProposalView } from '../api/client.js'
+import { ApiError, type CaptureView, type ProposalView } from '../api/client.js'
 import { ToolLandingPage } from '../layouts/index.js'
 import { useProjectScope, useSession } from '../session/SessionProvider.tsx'
 import { Banner, Button, Card, Field, Input, Pill, Spinner, Tearsheet, Textarea } from '../ui/index.js'
@@ -32,6 +32,7 @@ export function CaptureInbox({ projectId, projectName }: { projectId: string; pr
   const [values, setValues] = useState<FieldValues>({})
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
+  const [capture, setCapture] = useState<CaptureView | null>(null)
 
   const load = useCallback(async () => {
     if (!scoped) return
@@ -56,6 +57,14 @@ export function CaptureInbox({ projectId, projectName }: { projectId: string; pr
     setTitle(proposal.title)
     setValues(toFieldValues(proposal.body))
     setError(null)
+    // The point of the gate is checking the draft against the signal it came
+    // from. Showing only the agent's rationale asks the approver to audit the
+    // reasoning without the evidence.
+    setCapture(null)
+    api
+      .getCapture(proposal.captureId)
+      .then(setCapture)
+      .catch(() => setCapture(null))
   }
 
   async function accept() {
@@ -177,10 +186,23 @@ export function CaptureInbox({ projectId, projectName }: { projectId: string; pr
             <Banner tone="warn">{open.issues.map((issue) => issue.message).join('; ')}</Banner>
           )}
 
-          <Card title="What the capture said">
-            <p style={{ margin: 0, whiteSpace: 'pre-wrap', color: 'var(--ink-muted)' }}>
-              {open.rationale ?? 'No rationale was recorded.'}
+          <Card title={capture ? `What the ${capture.kind} said` : 'What the capture said'}>
+            <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
+              {capture?.text ?? <span style={{ color: 'var(--ink-faint)' }}>Loading the original capture…</span>}
             </p>
+            {open.rationale && (
+              <p
+                style={{
+                  margin: 'var(--space-3) 0 0',
+                  paddingTop: 'var(--space-3)',
+                  borderTop: '1px solid var(--line)',
+                  color: 'var(--ink-muted)',
+                }}
+              >
+                <strong style={{ color: 'var(--ink)' }}>Why it read it that way: </strong>
+                {open.rationale}
+              </p>
+            )}
             <p style={{ margin: 'var(--space-3) 0 0', fontSize: 12, color: 'var(--ink-faint)' }}>
               Drafted by {open.model ?? 'an agent'} · nothing exists until you accept
             </p>

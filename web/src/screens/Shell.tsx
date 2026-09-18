@@ -140,10 +140,6 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
 
   if (loading) return <Spinner label="Loading project" />
 
-  if (openRecordId) {
-    return <RecordDetail recordId={openRecordId} onBack={() => setOpenRecordId(null)} />
-  }
-
   const tabs: { key: ProjectTab; label: string }[] = [
     { key: 'work', label: 'In your court' },
     { key: 'records', label: 'Records' },
@@ -157,22 +153,48 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
           display: 'flex',
           alignItems: 'center',
           gap: 'var(--space-4)',
-          padding: '0 var(--space-5)',
+          padding: '0 var(--space-4)',
           borderBottom: '1px solid var(--line)',
           background: 'var(--surface)',
+          // At 390px the tabs do not fit. Scrolling sideways is honest; the
+          // alternative is a project number wrapped over two lines and a tab
+          // sliced in half at the edge.
+          overflowX: 'auto',
+          whiteSpace: 'nowrap',
         }}
       >
-        <Button variant="ghost" onClick={onLeave}>
-          ← {project.number}
-        </Button>
-        <Tabs active={tab} onSelect={(key) => setTab(key as ProjectTab)} tabs={tabs} />
+        <span style={{ flexShrink: 0 }}>
+          <Button variant="ghost" onClick={onLeave}>
+            ← {project.number}
+          </Button>
+        </span>
+        <Tabs
+          active={openRecordId ? '' : tab}
+          onSelect={(key) => {
+            setOpenRecordId(null)
+            setTab(key as ProjectTab)
+          }}
+          tabs={tabs}
+        />
       </nav>
 
-      {tab === 'work' && <BallInCourt projectId={project.id} onOpenRecord={setOpenRecordId} />}
-      {tab === 'records' && (
-        <ToolLanding projectId={project.id} projectName={project.name} onOpenRecord={setOpenRecordId} />
+      {/*
+        A record opens underneath the project nav rather than replacing it.
+        Taking the tabs away leaves the Back button as the only way out, which
+        is how people end up using the browser's back button on a single-page
+        app and losing their place.
+      */}
+      {openRecordId ? (
+        <RecordDetail recordId={openRecordId} onBack={() => setOpenRecordId(null)} />
+      ) : (
+        <>
+          {tab === 'work' && <BallInCourt projectId={project.id} onOpenRecord={setOpenRecordId} />}
+          {tab === 'records' && (
+            <ToolLanding projectId={project.id} projectName={project.name} onOpenRecord={setOpenRecordId} />
+          )}
+          {tab === 'inbox' && <CaptureInbox projectId={project.id} projectName={project.name} />}
+        </>
       )}
-      {tab === 'inbox' && <CaptureInbox projectId={project.id} projectName={project.name} />}
     </div>
   )
 }

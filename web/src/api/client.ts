@@ -208,9 +208,12 @@ export class ApiClient {
     return this.request('GET', `/records/${recordId}/history`)
   }
 
-  ballInCourt(params: { projectId?: string; overdue?: boolean } = {}): Promise<{ entries: BallInCourtEntry[] }> {
+  ballInCourt(
+    params: { projectId?: string; holderUserId?: string; overdue?: boolean } = {},
+  ): Promise<{ entries: BallInCourtEntry[] }> {
     const query = new URLSearchParams()
     if (params.projectId) query.set('projectId', params.projectId)
+    if (params.holderUserId) query.set('holderUserId', params.holderUserId)
     if (params.overdue) query.set('overdue', 'true')
     const suffix = query.toString() ? `?${query}` : ''
     return this.request('GET', `/ball-in-court${suffix}`)
@@ -221,6 +224,10 @@ export class ApiClient {
     input: { kind: CaptureView['kind']; text?: string; storageKey?: string; contentType?: string },
   ): Promise<CaptureView> {
     return this.request('POST', `/projects/${projectId}/captures`, input)
+  }
+
+  getCapture(captureId: string): Promise<CaptureView> {
+    return this.request('GET', `/captures/${captureId}`)
   }
 
   interpret(captureId: string): Promise<ProposalView> {
