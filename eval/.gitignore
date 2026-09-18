@@ -1,0 +1,2 @@
+# Run output is a local artifact; only cases and the recorded baseline are committed.
+runs/

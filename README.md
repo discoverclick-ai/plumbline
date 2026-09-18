@@ -93,11 +93,15 @@ POST   /proposals/:id/reject
 GET    /projects/:id/capture-stats
 ```
 
+**The eval harness.** The interpreter is the one place in the product where a model decides something, so it has a number attached. 24 cases covering every record type plus the failures that matter — hallucination probes, an injection attempt, an observation/punch boundary, captures with nothing usable in them — graded programmatically on five metrics that trade against each other, so a prompt change that lifts field recall by inventing values shows up as `no_invention` falling.
+
+It scores the real code path: the prompt is built by the same functions the product calls, from types loaded out of the database, so a migration that changes a record type changes the eval too. Every run prints its own noise floor, and the regression gate uses it as the default tolerance. And `--export` turns proposals a human edited before accepting into new cases whose gold answer is the human's correction, which is how the suite keeps matching real traffic. See [`eval/README.md`](eval/README.md).
+
 ## What is deliberately not here yet
 
-In blueprint order: the entity graph and scoped retrieval, the eval harness for the interpreter, the financial spine (a configurable budget code of named segments), offline predictive sync, and the web client.
+In blueprint order: the entity graph and scoped retrieval, the financial spine (a configurable budget code of named segments), offline predictive sync, and the web client.
 
-Two gaps inside the capture pipeline specifically. Transcription and OCR are not wired: a capture arrives with its `text` already extracted, and the field that turns audio and pixels into text is a separate provider call in front of the interpreter. And the eval harness matters more than the next feature does — when an agent drafts contractually significant records, you need golden sets and per-tenant quality telemetry before the tenth agent, not after. The `edited` column exists so that loop has something to hill-climb on.
+One gap inside the capture pipeline: transcription and OCR are not wired. A capture arrives with its `text` already extracted, and the step that turns audio and pixels into text is a separate provider call in front of the interpreter.
 
 ## Adding a tool
 
