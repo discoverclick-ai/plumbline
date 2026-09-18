@@ -60,13 +60,21 @@ docs/     the Procore teardown this is built from
 npm install
 npm test                       # boots its own Postgres, applies every migration, 121 tests
 
-DATABASE_URL=postgres://…/plumbline npm run migrate
+# a real deployment
+OWNER_DATABASE_URL=postgres://<owner>@host/plumbline npm run migrate
+OWNER_DATABASE_URL=postgres://<owner>@host/plumbline npm run provision:app-role
 npm start                      # the API on :8080
 ```
 
 The test suites need no database of their own: they boot an embedded Postgres and apply `db/migrations` from scratch, so a clean clone runs green with no setup. See `.env.example` for what a real deployment needs.
 
-Migrations run as the database owner. The application must run as `plumbline_app`, a non-superuser role created by migration `0006_rls.sql`; connect as an owner role carrying `BYPASSRLS` and every policy is skipped silently, with no error and no sign anything is wrong.
+### Do not skip `provision:app-role`
+
+Migrations run as the database owner, because they need DDL and `CREATE ROLE`. The application must **not**: it runs as `plumbline_app`, a non-superuser role created by migration `0006_rls.sql` and deliberately left `NOLOGIN`, because issuing a credential is a deployment decision and no password belongs in a migration file.
+
+Connect the application as an owner role instead and every row-level security policy is skipped silently. No error, nothing looks wrong, and reads simply return other tenants' rows. Managed Postgres platforms hand you owner roles that carry `BYPASSRLS` as a matter of course — Neon's `neondb_owner` does.
+
+`provision:app-role` gives the role a login and then refuses to hand back a connection string until that role has demonstrated confinement in both directions: nothing visible with no tenant context, and exactly one tenant's rows visible with one. The second half is what separates "row-level security is working" from "this role cannot read anything at all", and both look identical if you only check the first.
 
 ## The API shape
 

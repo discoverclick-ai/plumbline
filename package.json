@@ -14,6 +14,7 @@
     "test": "node scripts/run-tests.mjs",
     "typecheck": "npm run typecheck -w @plumbline/shared && npm run typecheck -w @plumbline/api",
     "migrate": "npm run migrate -w @plumbline/db",
+    "provision:app-role": "node scripts/provision-app-role.mjs",
     "start": "npm run start -w @plumbline/api",
     "eval:capture": "node eval/run.mjs"
   }

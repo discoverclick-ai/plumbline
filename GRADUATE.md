@@ -40,6 +40,4 @@ git commit -am "chore: plumbline graduated to its own repository"
 
 ## What the new repository is still missing
 
-**A role-provisioning script.** Migration `0006_rls.sql` creates `plumbline_app` as `NOLOGIN`, because issuing a credential is a deployment decision and no password belongs in a migration file. Every deployment therefore has to grant that role to a login user by hand. `smartbox-x` solves this with a `provision:app-role` script that connects as the new role, confirms `rolbypassrls` is false, confirms a context-free read returns zero rows, and refuses to write a connection string that has not demonstrated confinement. Port it before the first real deployment: a credential that quietly bypasses row-level security is worse than no credential, because it looks like it works.
-
 **A recorded eval baseline.** `eval/` has no `baseline.json` yet, because nothing has been scored against a real model. Run `npm run eval:capture -- --save-baseline` once with a key (roughly a dollar for the 24 cases), and `--check` becomes a regression gate CI can enforce.
