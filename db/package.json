@@ -1,0 +1,13 @@
+{
+  "name": "@plumbline/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Plumbline Postgres schema and migration runner",
+  "scripts": {
+    "migrate": "node migrate.mjs"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}

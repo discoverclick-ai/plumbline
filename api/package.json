@@ -1,0 +1,24 @@
+{
+  "name": "@plumbline/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Plumbline HTTP API over the record kernel",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@plumbline/shared": "^0.1.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "embedded-postgres": "17.10.0-beta.17",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
