@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import {
+  AnthropicInterpretationProvider,
   authenticate,
+  CaptureService,
   KernelError,
   loadAccess,
   loadRecordTypes,
@@ -10,6 +12,8 @@ import {
   withTenant,
   type Actor,
   type Db,
+  type InterpretationProvider,
+  type ParticipantRole,
   type SessionIdentity,
 } from '@plumbline/shared'
 import type { Pool } from 'pg'
@@ -44,6 +48,7 @@ interface RequestContext {
   identity: SessionIdentity
   actor: Actor
   kernel: RecordKernel
+  capture: CaptureService
   db: Pool
 }
 
@@ -203,6 +208,67 @@ const ROUTES: Route[] = [
    * With no parameters it is your own workload, which is the field user's
    * home screen.
    */
+  /**
+   * The capture pipeline. Note that nothing here can create a record: the only
+   * route that produces one is /proposals/:id/accept, and it runs the ordinary
+   * kernel path as the authenticated human.
+   */
+  route('POST', '/projects/:projectId/captures', async ({ capture, actor, params, body }) =>
+    capture.record(actor, {
+      projectId: params['projectId'] as string,
+      kind: (body['kind'] as 'photo' | 'voice' | 'document' | 'text' | 'email') ?? 'text',
+      ...(body['text'] !== undefined ? { text: String(body['text']) } : {}),
+      ...(body['storageKey'] !== undefined ? { storageKey: String(body['storageKey']) } : {}),
+      ...(body['contentType'] !== undefined ? { contentType: String(body['contentType']) } : {}),
+      ...(body['byteSize'] !== undefined ? { byteSize: Number(body['byteSize']) } : {}),
+      ...(body['capturedAt'] !== undefined ? { capturedAt: new Date(String(body['capturedAt'])) } : {}),
+      ...(body['latitude'] !== undefined ? { latitude: Number(body['latitude']) } : {}),
+      ...(body['longitude'] !== undefined ? { longitude: Number(body['longitude']) } : {}),
+      ...(body['device'] !== undefined ? { device: body['device'] as Record<string, unknown> } : {}),
+    }),
+  ),
+
+  route('GET', '/captures/:captureId', async ({ capture, actor, params }) =>
+    capture.getCapture(actor, params['captureId'] as string),
+  ),
+
+  route('POST', '/captures/:captureId/interpret', async ({ capture, actor, params }) =>
+    capture.interpret(actor, params['captureId'] as string),
+  ),
+
+  route('GET', '/projects/:projectId/proposals', async ({ capture, actor, params, query }) => {
+    const proposals = await capture.inbox(actor, {
+      projectId: params['projectId'] as string,
+      ...(query.get('status')
+        ? { status: query.get('status') as 'pending' | 'accepted' | 'rejected' | 'superseded' }
+        : {}),
+      limit: Number(query.get('limit') ?? 50),
+    })
+    return { proposals }
+  }),
+
+  route('POST', '/proposals/:proposalId/accept', async ({ capture, actor, params, body }) =>
+    capture.accept(actor, params['proposalId'] as string, {
+      ...(body['title'] !== undefined ? { title: String(body['title']) } : {}),
+      ...(body['body'] !== undefined ? { body: body['body'] as Record<string, unknown> } : {}),
+      ...(body['participants'] !== undefined
+        ? { participants: body['participants'] as { userId: string; role: ParticipantRole }[] }
+        : {}),
+    }),
+  ),
+
+  route('POST', '/proposals/:proposalId/reject', async ({ capture, actor, params, body }) =>
+    capture.reject(
+      actor,
+      params['proposalId'] as string,
+      body['note'] === undefined ? undefined : String(body['note']),
+    ),
+  ),
+
+  route('GET', '/projects/:projectId/capture-stats', async ({ capture, actor, params }) =>
+    capture.stats(actor, { projectId: params['projectId'] as string }),
+  ),
+
   route('GET', '/ball-in-court', async ({ kernel, actor, query }) => {
     const entries = await kernel.ballInCourt(actor, {
       ...(query.get('projectId') ? { projectId: query.get('projectId') as string } : {}),
@@ -251,8 +317,27 @@ function bearer(req: IncomingMessage): string | null {
   return scheme?.toLowerCase() === 'bearer' && token ? token : null
 }
 
-export function createApiServer(pool: Pool): Server {
+export interface ApiServerOptions {
+  /**
+   * Injected by tests with a scripted double. Left unset in production, where
+   * the default provider is constructed lazily — it resolves credentials at
+   * construction, and a deployment that never captures should not need a
+   * model key to boot.
+   */
+  interpretationProvider?: InterpretationProvider
+}
+
+export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Server {
   const kernel = new RecordKernel(pool as Db)
+
+  let captureService: CaptureService | null = null
+  const capture = (): CaptureService => {
+    captureService ??= new CaptureService(
+      pool as Db,
+      options.interpretationProvider ?? new AnthropicInterpretationProvider(),
+    )
+    return captureService
+  }
 
   return createServer((req, res) => {
     void (async () => {
@@ -289,10 +374,13 @@ export function createApiServer(pool: Pool): Server {
           identity,
           actor: { tenantId: identity.tenantId, userId: identity.userId },
           kernel,
+          capture: capture(),
           db: pool,
         })
 
-        send(res, req.method === 'POST' && url.pathname.endsWith('/records') ? 201 : 200, result)
+        const created =
+          req.method === 'POST' && (url.pathname.endsWith('/records') || url.pathname.endsWith('/captures'))
+        send(res, created ? 201 : 200, result)
       } catch (err) {
         if (err instanceof KernelError) {
           send(res, err.status, { error: err.code, message: err.message, ...err.detail })

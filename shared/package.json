@@ -18,7 +18,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "@anthropic-ai/sdk": "^0.115.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

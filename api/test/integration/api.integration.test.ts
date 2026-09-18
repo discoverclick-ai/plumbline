@@ -13,6 +13,27 @@ import {
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { createApiServer } from '../../src/server.js'
+import type { InterpretationProvider, ProviderRequest, ProviderResponse } from '@plumbline/shared'
+
+/** Scripted interpreter: the capture routes are exercised with no network. */
+class ScriptedProvider implements InterpretationProvider {
+  readonly name = 'scripted'
+  private readonly queue: unknown[] = []
+  push(output: unknown): void {
+    this.queue.push(output)
+  }
+  async interpret(_request: ProviderRequest): Promise<ProviderResponse> {
+    const next = this.queue.shift()
+    if (next === undefined) throw new Error('ScriptedProvider ran out of queued outputs')
+    return {
+      output: next,
+      model: 'claude-opus-5',
+      usage: { inputTokens: 900, outputTokens: 140, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    }
+  }
+}
+
+const scripted = new ScriptedProvider()
 
 /**
  * The API over a real database and a real HTTP socket. These assert the two
@@ -58,7 +79,7 @@ async function signIn(email: string): Promise<string> {
 
 beforeAll(async () => {
   pool = createPool({ connectionString: inject('databaseUrl') })
-  server = createApiServer(pool)
+  server = createApiServer(pool, { interpretationProvider: scripted })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 
@@ -258,5 +279,63 @@ describe('the record surface', () => {
   it('answers 404 for an unknown route and 405 for the wrong method', async () => {
     expect((await call('GET', '/nope', { token: pmToken })).status).toBe(404)
     expect((await call('DELETE', '/projects', { token: pmToken })).status).toBe(405)
+  })
+})
+
+/**
+ * The capture pipeline over HTTP, with a scripted interpreter. No network, no
+ * key: the provider seam exists precisely so this is testable.
+ */
+describe('the capture pipeline', () => {
+  it('goes from a field capture to an accepted record, and refuses to skip the gate', async () => {
+    const captured = await call('POST', `/projects/${projectId}/captures`, {
+      token: tradeToken,
+      body: {
+        kind: 'photo',
+        text: 'Photo shows a missing guardrail at the level 4 stair opening.',
+        storageKey: 'captures/2026/03/guardrail.jpg',
+        contentType: 'image/jpeg',
+        byteSize: 1_800_000,
+      },
+    })
+    // A trade partner may always send signal, whatever else they may not do.
+    expect(captured.status).toBe(201)
+    expect(captured.body.status).toBe('received')
+
+    scripted.push({
+      typeKey: 'observation',
+      title: 'Missing guardrail at level 4 stair',
+      fields: [
+        { key: 'description', value: 'Guardrail missing at the level 4 stair opening.' },
+        { key: 'observation_type', value: 'Safety' },
+      ],
+      participants: [],
+      confidence: 0.91,
+      rationale: 'The photo shows an unsafe condition on site.',
+    })
+
+    const interpreted = await call('POST', `/captures/${captured.body.id}/interpret`, { token: tradeToken })
+    expect(interpreted.status).toBe(200)
+    expect(interpreted.body.status).toBe('pending')
+    expect(interpreted.body.recordId).toBeNull()
+
+    const inbox = await call('GET', `/projects/${projectId}/proposals`, { token: pmToken })
+    expect(inbox.body.proposals.some((p: { id: string }) => p.id === interpreted.body.id)).toBe(true)
+
+    // The trade partner drafted it but cannot decide it.
+    const refused = await call('POST', `/proposals/${interpreted.body.id}/reject`, {
+      token: tradeToken,
+      body: { note: 'not mine to judge' },
+    })
+    expect(refused.status).toBe(403)
+
+    const accepted = await call('POST', `/proposals/${interpreted.body.id}/accept`, { token: pmToken })
+    expect(accepted.status).toBe(200)
+    expect(accepted.body.record.record.designation).toMatch(/^OBS-\d{3}$/)
+    expect(accepted.body.proposal.status).toBe('accepted')
+
+    const stats = await call('GET', `/projects/${projectId}/capture-stats`, { token: pmToken })
+    expect(stats.body.accepted).toBeGreaterThan(0)
+    expect(stats.body.costMicros).toBeGreaterThan(0)
   })
 })

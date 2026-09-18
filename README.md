@@ -32,6 +32,18 @@ Five record types, configured not coded: RFI, Submittal, Punch Item, Observation
 
 **Opaque server-side sessions**, scrypt passwords, revocation effective on the next request.
 
+**The capture pipeline.** The field sends signal — a photo, a voice note, a scanned document, an email — and an agent drafts the record it should become. A human accepts, edits and accepts, or rejects.
+
+One rule holds the whole thing up: an agent may propose anything and may create nothing. Acceptance calls the ordinary `RecordKernel.create` as the approving human, under their permissions, so a confident, well-formed proposal for a tool that person cannot use is refused exactly as hand entry would be. There is no confidence threshold that bypasses the gate and no batch mode that skips it; adding one would mean deleting `CaptureService`, not adding a flag to it.
+
+Three properties worth knowing:
+
+The prompt is generated from the record type registry, so a tool added by a migration next month is interpretable the moment it exists. No new agent, no prompt edit. That is the payoff of the kernel.
+
+Grounding is confined by the same row-level security as a human. The type registry, the project roster and the capture are all read inside the approving user's tenant context, so the model cannot be grounded in data the people involved could not see. That is a property of the transaction, not an instruction in the prompt.
+
+Every model call is costed per tenant at the time it ran, and every accepted proposal records whether the human had to edit it first. `acceptedUnedited / accepted` is the quality metric for the pipeline: an agent whose drafts always need fixing is costing the field time, not saving it.
+
 ## Layout
 
 ```
@@ -71,13 +83,21 @@ POST   /records/:id/transitions
 POST   /records/:id/comments
 GET    /records/:id/history
 GET    /ball-in-court             ?projectId= &holderUserId= &overdue=true
+
+POST   /projects/:id/captures     signal in; the cheapest call in the system
+GET    /captures/:id
+POST   /captures/:id/interpret    draft the record this signal should become
+GET    /projects/:id/proposals    the approval inbox
+POST   /proposals/:id/accept      THE GATE: creates the record as you
+POST   /proposals/:id/reject
+GET    /projects/:id/capture-stats
 ```
 
 ## What is deliberately not here yet
 
-In blueprint order: the capture pipeline (photo, voice and document in, proposed record out, human approval gate), the entity graph and scoped retrieval, the first agents with their eval harness, the financial spine (a configurable budget code of named segments), offline predictive sync, and the web client.
+In blueprint order: the entity graph and scoped retrieval, the eval harness for the interpreter, the financial spine (a configurable budget code of named segments), offline predictive sync, and the web client.
 
-The capture pipeline is the one that matters. Everything above is table stakes that Procore already has; inverting data entry so the field produces signal and agents draft the records is the part they cannot retrofit.
+Two gaps inside the capture pipeline specifically. Transcription and OCR are not wired: a capture arrives with its `text` already extracted, and the field that turns audio and pixels into text is a separate provider call in front of the interpreter. And the eval harness matters more than the next feature does — when an agent drafts contractually significant records, you need golden sets and per-tenant quality telemetry before the tenth agent, not after. The `edited` column exists so that loop has something to hill-climb on.
 
 ## Adding a tool
 
