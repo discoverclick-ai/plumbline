@@ -4,6 +4,8 @@ A construction management platform, built on one record kernel instead of two do
 
 The research this is built from is in [`docs/procore-teardown.md`](docs/procore-teardown.md): a teardown of Procore, read from its shipping design system and its own documentation, and the architecture blueprint that came out of it. This repository is that blueprint, built.
 
+What gets built next is specified in [`docs/specs/`](docs/specs/), starting with [contract intelligence and the notice clock](docs/specs/contract-intelligence.md): the contract's own deadlines, extracted with citations, running as live clocks against the record kernel.
+
 ## The bet
 
 Every tool in the product is the same table. An RFI, a submittal, a punch item, an observation and a daily log differ by a row in `record_types` and by nothing else: their fields, their states, who owes the next action in each state, and what permission each transition demands are all data.
@@ -52,7 +54,7 @@ shared/   the kernel: types, workflow engine, permissions, repositories
 api/      HTTP surface over the kernel
 web/      the client: three page templates, rendered from the registry
 eval/     the capture interpreter's eval suite
-docs/     the Procore teardown this is built from
+docs/     the Procore teardown this is built from, and specs for what comes next
 ```
 
 `shared/src` is worth reading in this order: `record-type.ts` (what a tool is), `workflow.ts` (the state machine, pure), `permissions.ts` (every authorization rule, in one file), `kernel.ts` (the transaction that ties them together).
