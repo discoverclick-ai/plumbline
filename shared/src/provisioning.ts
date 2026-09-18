@@ -62,7 +62,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
     appliesTo: ['general_contractor'],
     tools: [
       { toolKey: 'rfis', level: 'standard', privileges: ['create', 'respond', 'close'] },
-      { toolKey: 'submittals', level: 'standard', privileges: ['create', 'review'] },
+      { toolKey: 'submittals', level: 'standard', privileges: ['create', 'review', 'forward'] },
       { toolKey: 'punch_list', level: 'standard', privileges: ['create', 'verify'] },
       { toolKey: 'observations', level: 'standard', privileges: ['create', 'close'] },
       { toolKey: 'daily_log', level: 'standard', privileges: ['create'] },
@@ -135,8 +135,12 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
     appliesTo: ['specialty_contractor', 'supplier'],
     isDefault: true,
     tools: [
-      { toolKey: 'rfis', level: 'read_only', privileges: ['create'] },
-      { toolKey: 'submittals', level: 'read_only', privileges: ['create'] },
+      // Standard, not read_only. Both of these types require `standard` to run
+      // their own submit transition, so read_only plus a create privilege let
+      // a trade partner raise an RFI and then never send it, which is a dead
+      // record and a sub who concludes the software is broken.
+      { toolKey: 'rfis', level: 'standard', privileges: ['create'] },
+      { toolKey: 'submittals', level: 'standard', privileges: ['create'] },
       { toolKey: 'punch_list', level: 'standard' },
       { toolKey: 'observations', level: 'read_only' },
       { toolKey: 'daily_log', level: 'none' },

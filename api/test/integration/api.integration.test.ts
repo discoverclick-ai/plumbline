@@ -264,8 +264,13 @@ describe('the record surface', () => {
     expect(pmView.body.tools.rfis.level).toBe('standard')
     expect(pmView.body.tools.rfis.privileges).toContain('respond')
 
+    // A trade partner may raise an RFI and send it, which needs `standard`,
+    // and may not answer one. Asserting the level alone hid the fact that
+    // read_only plus a create privilege produced an RFI nobody could submit.
     const tradeView = await call('GET', `/me?projectId=${projectId}`, { token: tradeToken })
-    expect(tradeView.body.tools.rfis.level).toBe('read_only')
+    expect(tradeView.body.tools.rfis.level).toBe('standard')
+    expect(tradeView.body.tools.rfis.privileges).toContain('create')
+    expect(tradeView.body.tools.rfis.privileges).not.toContain('respond')
     expect(tradeView.body.tools.daily_log.level).toBe('none')
   })
 
