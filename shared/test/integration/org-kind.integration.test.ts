@@ -12,6 +12,7 @@ import {
   provisionTenant,
 } from '../../src/provisioning.js'
 import { clearRecordTypeCache } from '../../src/repositories/record-types.js'
+import { getDefinitionAtVersion, publishRecordType } from '../../src/record-type-publish.js'
 import { loadAccess } from '../../src/repositories/permissions.js'
 import { toolAccess } from '../../src/permissions.js'
 
@@ -270,5 +271,70 @@ describe('T&M tickets, the first type that belongs to one side of the contract',
     const signed = await kernel.transition(gc, created.record.id, { transitionKey: 'sign' })
     expect(signed.record.status).toBe('signed')
     expect(signed.assignment).toBeNull()
+  })
+})
+
+describe('publishing a new definition over live records', () => {
+  it('refuses a change that would strand real records, and names them', async () => {
+    const kernel = new RecordKernel(pool)
+    await kernel.create(
+      { tenantId, userId: subPm },
+      {
+        projectId,
+        typeKey: 't_and_m_ticket',
+        title: 'Ticket that must survive a definition change',
+        body: {
+          work_date: '2026-09-18',
+          description: 'Temporary shoring at the north wall.',
+          authorized_by: 'Sam Ruiz',
+          labor_hours: 4,
+        },
+      },
+    )
+
+    const current = await getDefinitionAtVersion(pool, 't_and_m_ticket', 1)
+    expect(current).not.toBeNull()
+
+    // Drop the state those records are sitting in.
+    const mutilated = {
+      ...current,
+      workflow: {
+        ...current!.workflow,
+        initial: 'submitted',
+        states: current!.workflow.states.filter((s) => s.key !== 'draft'),
+        transitions: current!.workflow.transitions.filter((t) => !t.from.includes('draft')),
+      },
+    }
+
+    const failure = await publishRecordType(pool, 't_and_m_ticket', mutilated).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(ValidationError)
+    const issues = (failure as ValidationError).issues
+    expect(issues.some((i) => i.field === 'status_removed')).toBe(true)
+    expect(issues.some((i) => /\d+ records/.test(i.message))).toBe(true)
+
+    // And the type is untouched: a refused publish changes nothing.
+    const { rows } = await pool.query<{ version: number }>(
+      'SELECT version FROM record_types WHERE key = $1',
+      ['t_and_m_ticket'],
+    )
+    expect(rows[0]?.version).toBe(1)
+  })
+
+  it('publishes a safe change and keeps the old definition readable', async () => {
+    const current = await getDefinitionAtVersion(pool, 't_and_m_ticket', 1)
+    const widened = {
+      ...current,
+      fields: [...current!.fields, { key: 'weather', label: 'Weather', type: 'text' }],
+    }
+
+    const published = await publishRecordType(pool, 't_and_m_ticket', widened, { note: 'Add weather' })
+    expect(published.version).toBe(2)
+
+    // Version 1 is still there, so a record stamped at version 1 can still be
+    // read back under the shape it was created in.
+    const v1 = await getDefinitionAtVersion(pool, 't_and_m_ticket', 1)
+    expect(v1!.fields.some((f) => f.key === 'weather')).toBe(false)
+    const v2 = await getDefinitionAtVersion(pool, 't_and_m_ticket', 2)
+    expect(v2!.fields.some((f) => f.key === 'weather')).toBe(true)
   })
 })
