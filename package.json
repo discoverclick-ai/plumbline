@@ -1,0 +1,20 @@
+{
+  "name": "plumbline",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-native construction management platform: one record kernel instead of two dozen hand-built tools",
+  "workspaces": [
+    "db",
+    "shared",
+    "api"
+  ],
+  "scripts": {
+    "build": "npm run build -w @plumbline/shared && npm run build -w @plumbline/api",
+    "pretest": "npm run build -w @plumbline/shared",
+    "test": "node scripts/run-tests.mjs",
+    "typecheck": "npm run typecheck -w @plumbline/shared && npm run typecheck -w @plumbline/api",
+    "migrate": "npm run migrate -w @plumbline/db",
+    "start": "npm run start -w @plumbline/api",
+    "eval:capture": "node eval/run.mjs"
+  }
+}

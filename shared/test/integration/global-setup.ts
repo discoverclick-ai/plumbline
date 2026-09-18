@@ -35,11 +35,13 @@ export default async function setup(project: TestProject): Promise<() => Promise
     // Windows initdb defaults to the system codepage (WIN1252); the platform
     // stores UTF-8 text, so the test cluster must too.
     initdbFlags: ['--encoding=UTF8', '--locale=C'],
-    // Postgres refuses to run as root, so when the harness is root (CI
-    // containers, the cloud dev environment) embedded-postgres runs initdb and
-    // the server as a `postgres` user. Without this it never takes ownership
-    // of the data directory and initdb dies on "could not change permissions".
-    createPostgresUser: true,
+    // Postgres refuses to run as root, so when the harness IS root (containers,
+    // the cloud dev environment) embedded-postgres has to run initdb and the
+    // server as a `postgres` user and take ownership of the data directory —
+    // without this, initdb dies on a permissions error before any test runs.
+    // Only when root: as an ordinary user the chown it performs would itself
+    // fail with EPERM, so the flag must not be set unconditionally.
+    createPostgresUser: process.getuid?.() === 0,
   })
   await embedded.initialise()
   await embedded.start()

@@ -2,9 +2,7 @@
 
 A construction management platform, built on one record kernel instead of two dozen hand-built tools.
 
-The research this is built from is in [`docs/procore-teardown.md`](../docs/procore-teardown.md). This is the first vertical slice of the blueprint in section 8 of that document.
-
-> Codename only. Plumbline lives inside the `smartbox-x` repository because that is where the work started; it shares no code, no schema and no database with the vending platform, and it should graduate to its own repository before it grows further.
+The research this is built from is in [`docs/procore-teardown.md`](docs/procore-teardown.md): a teardown of Procore, read from its shipping design system and its own documentation, and the architecture blueprint that came out of it. This repository is that blueprint, built.
 
 ## The bet
 
@@ -47,10 +45,11 @@ Every model call is costed per tenant at the time it ran, and every accepted pro
 ## Layout
 
 ```
-plumbline/
-  db/         Postgres schema and migration runner
-  shared/     the kernel: types, workflow engine, permissions, repositories
-  api/        HTTP surface over the kernel
+db/       Postgres schema and migration runner
+shared/   the kernel: types, workflow engine, permissions, repositories
+api/      HTTP surface over the kernel
+eval/     the capture interpreter's eval suite
+docs/     the Procore teardown this is built from
 ```
 
 `shared/src` is worth reading in this order: `record-type.ts` (what a tool is), `workflow.ts` (the state machine, pure), `permissions.ts` (every authorization rule, in one file), `kernel.ts` (the transaction that ties them together).
@@ -59,10 +58,13 @@ plumbline/
 
 ```bash
 npm install
-DATABASE_URL=postgres://…/plumbline npm run migrate:plumbline
-npm test -w @plumbline/shared
-npm test -w @plumbline/api
+npm test                       # boots its own Postgres, applies every migration, 121 tests
+
+DATABASE_URL=postgres://…/plumbline npm run migrate
+npm start                      # the API on :8080
 ```
+
+The test suites need no database of their own: they boot an embedded Postgres and apply `db/migrations` from scratch, so a clean clone runs green with no setup. See `.env.example` for what a real deployment needs.
 
 Migrations run as the database owner. The application must run as `plumbline_app`, a non-superuser role created by migration `0006_rls.sql`; connect as an owner role carrying `BYPASSRLS` and every policy is skipped silently, with no error and no sign anything is wrong.
 

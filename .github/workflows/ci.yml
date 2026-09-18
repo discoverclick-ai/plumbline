@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # The integration suites boot their own Postgres (embedded-postgres) and
+      # apply db/migrations from scratch, so there is no service container here
+      # and no database to configure. A clean clone is the check that catches a
+      # missing build step.
+      - run: npm test
