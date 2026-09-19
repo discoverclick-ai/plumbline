@@ -4,6 +4,7 @@ import {
   AttachmentService,
   authenticate,
   DrawingService,
+  EscalationService,
   SyncService,
   BudgetService,
   buildErpBatch,
@@ -66,6 +67,7 @@ interface RequestContext {
   budget: BudgetService
   drawings: DrawingService
   sync: SyncService
+  escalations: EscalationService
   commitments: CommitmentService
   invoicing: InvoicingService
   db: Pool
@@ -693,6 +695,24 @@ const ROUTES: Route[] = [
     conflicts: await sync.conflicts(actor, params['projectId'] as string),
   })),
 
+  route('GET', '/projects/:projectId/escalations', async ({ actor, params, escalations }) => ({
+    escalations: await escalations.pending(actor, params['projectId'] as string),
+  })),
+
+  route('POST', '/projects/:projectId/escalations/sweep', async ({ actor, params, escalations }) =>
+    escalations.sweep(actor, params['projectId'] as string),
+  ),
+
+  route('POST', '/escalations/:escalationId/approve', async ({ actor, params, escalations }) => {
+    await escalations.approve(actor, params['escalationId'] as string)
+    return { ok: true }
+  }),
+
+  route('POST', '/escalations/:escalationId/dismiss', async ({ actor, params, escalations }) => {
+    await escalations.dismiss(actor, params['escalationId'] as string)
+    return { ok: true }
+  }),
+
   route('GET', '/ball-in-court', async ({ kernel, actor, query }) => {
     const entries = await kernel.ballInCourt(actor, {
       ...(query.get('projectId') ? { projectId: query.get('projectId') as string } : {}),
@@ -764,6 +784,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
   // lazily and no credential to resolve.
   const budgetService = new BudgetService(pool as Db)
   const syncService = new SyncService(pool as Db)
+  const escalationService = new EscalationService(pool as Db)
   const commitmentService = new CommitmentService(pool as Db)
   const invoicingService = new InvoicingService(pool as Db)
 
@@ -836,6 +857,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           budget: budgetService,
           drawings: drawingService(),
           sync: syncService,
+          escalations: escalationService,
           commitments: commitmentService,
           invoicing: invoicingService,
           db: pool,
