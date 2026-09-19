@@ -1,6 +1,7 @@
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { ClaimFileService, renderClaimFile } from '../../src/contracts/claim-file.js'
+import { NoticeDraftService, TemplateNoticeDrafter, type NoticeDraftProvider } from '../../src/contracts/notice-drafter.js'
 import { ClockEngine } from '../../src/contracts/clock-engine.js'
 import { ContractService } from '../../src/contracts/documents.js'
 import { ObligationService } from '../../src/contracts/obligations.js'
@@ -364,5 +365,102 @@ describe('the document itself', () => {
     // Markdown on purpose: it survives email, it diffs, and it prints.
     expect(rendered).not.toContain('undefined')
     expect(rendered).not.toContain('[object Object]')
+  })
+})
+
+describe('drafting the letter', () => {
+  it('writes a notice that quotes the clause and claims nothing', async () => {
+    const drafter = new NoticeDraftService(pool, new TemplateNoticeDrafter())
+    const drafted = await drafter.draft(pm, clockId)
+
+    // Quoted, never characterised. The reader checks it against their own
+    // copy and finds it identical, which is the point.
+    expect(drafted.body).toContain('give written notice to the Owner within five days after the first observance')
+    expect(drafted.body).toContain('Mercy Tower')
+    expect(drafted.body).toContain('Pia Marsh')
+    // The evidence, with its timestamp and where it was taken.
+    expect(drafted.body).toContain('39.742043')
+    // The activity it affects, with the float as the schedule has it.
+    expect(drafted.body).toContain('Pour north footings')
+
+    // Rights reserved, nothing claimed. What to ask for is a commercial
+    // decision a person makes, and a draft that filled in a number would be
+    // making it for them.
+    expect(drafted.body).toMatch(/reserve all rights/)
+    expect(drafted.body).not.toMatch(/\$[0-9]/)
+    // And no legal conclusions anywhere.
+    expect(drafted.body).not.toMatch(/in breach|liable|entitled to compensation/i)
+  })
+
+  it('leaves the record exactly where it was', async () => {
+    const drafter = new NoticeDraftService(pool, new TemplateNoticeDrafter())
+    const before = await kernel.get(pm, noticeRecordId)
+    await drafter.draft(pm, clockId)
+    const after = await kernel.get(pm, noticeRecordId)
+
+    // The body changed; the state did not. Advancing it here would turn "the
+    // agent drafted a notice" into "the agent decided a notice was
+    // warranted", and those are different products.
+    expect(after.record.status).toBe(before.record.status)
+    expect(after.record.body['description']).toContain('This is written notice under clause 4.7.1')
+  })
+
+  it('names what it could not say rather than filling the gap', async () => {
+    const drafter = new NoticeDraftService(pool, new TemplateNoticeDrafter())
+
+    const typed = await kernel.create(pm, {
+      projectId,
+      typeKey: 'observation',
+      title: 'Third obstruction, west side',
+      body: { description: 'Same again.' },
+    })
+    await new ClockEngine(pool).fire()
+    const { rows } = await pool.query('SELECT id FROM obligation_clocks WHERE triggering_record_id = $1', [
+      typed.record.id,
+    ])
+
+    const drafted = await drafter.draft(pm, rows[0]!.id)
+    expect(drafted.missing.join(' ')).toMatch(/Contemporaneous evidence/)
+    // And the letter says nothing about evidence it does not have.
+    expect(drafted.body).not.toMatch(/evidenced by the following/)
+  })
+
+  it('throws away a draft that states a legal conclusion, whoever wrote it', async () => {
+    // The seam exists so a customer can swap the drafter, so a rule only the
+    // shipped provider honours is one the next provider breaks silently. The
+    // service enforces it.
+    const reckless: NoticeDraftProvider = {
+      name: 'reckless',
+      async draft(request) {
+        const base = await new TemplateNoticeDrafter().draft(request)
+        return { ...base, body: `${base.body}\n\nYou are in breach of the Contract and are liable for the delay.` }
+      },
+    }
+    const drafted = await new NoticeDraftService(pool, reckless).draft(pm, clockId)
+
+    expect(drafted.body).not.toMatch(/in breach/i)
+    expect(drafted.missing.join(' ')).toMatch(/legal conclusion/)
+    // And what landed on the record is the safe version, not the one that was
+    // thrown away.
+    const saved = await kernel.get(pm, noticeRecordId)
+    expect(String(saved.record.body['description'])).not.toMatch(/in breach/i)
+  })
+
+  it('refuses a draft that no longer quotes the clause verbatim', async () => {
+    // A drafter that tidied the quote has produced a misquotation of a
+    // contract inside a legal document.
+    const tidier: NoticeDraftProvider = {
+      name: 'tidier',
+      async draft(request) {
+        const base = await new TemplateNoticeDrafter().draft(request)
+        return { ...base, body: base.body.replace('within five days', 'within 5 days') }
+      },
+    }
+    await expect(new NoticeDraftService(pool, tidier).draft(pm, clockId)).rejects.toThrow(/verbatim/)
+  })
+
+  it('refuses somebody who may not raise a notice', async () => {
+    const drafter = new NoticeDraftService(pool, new TemplateNoticeDrafter())
+    await expect(drafter.draft(sub, clockId)).rejects.toThrow()
   })
 })

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import {
   AnthropicInterpretationProvider,
+  AnthropicNoticeDrafter,
   AnthropicObligationExtractor,
   AttachmentService,
   authenticate,
@@ -10,6 +11,7 @@ import {
   ContractService,
   EscalationService,
   McpToolRunner,
+  NoticeDraftService,
   ObligationService,
   renderClaimFile,
   ScheduleService,
@@ -84,6 +86,7 @@ interface RequestContext {
   clocks: ClockEngine
   claims: ClaimFileService
   statutory: StatutoryService
+  drafter: NoticeDraftService
   schedule: ScheduleService
   mcp: McpToolRunner
   commitments: CommitmentService
@@ -936,6 +939,16 @@ const ROUTES: Route[] = [
    * side effect of doing the work, so it exists continuously rather than
    * being reconstructed by a project engineer under deposition pressure.
    */
+  /**
+   * Drafts the letter into the notice record, and stops.
+   *
+   * The record does not move state. An agent may draft anything here and
+   * serve nothing: every route out of a draft is a human transition.
+   */
+  route('POST', '/clocks/:clockId/draft-notice', async ({ actor, params, drafter }) =>
+    drafter.draft(actor, params['clockId'] as string),
+  ),
+
   route('GET', '/clocks/:clockId/claim-file', async ({ actor, params, claims }) =>
     claims.assemble(actor, params['clockId'] as string),
   ),
@@ -1063,6 +1076,18 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
   const scheduleService = new ScheduleService(pool as Db)
   const claimFileService = new ClaimFileService(pool as Db)
   const statutoryService = new StatutoryService(pool as Db)
+
+  // Same lazily-built provider pattern as the extractor: the SDK resolves
+  // credentials in its constructor, and a deployment that never drafts a
+  // notice must still serve every other route.
+  let noticeDrafter: AnthropicNoticeDrafter | null = null
+  const draftService = new NoticeDraftService(pool as Db, {
+    name: 'lazy',
+    draft: (request) => {
+      noticeDrafter ??= new AnthropicNoticeDrafter()
+      return noticeDrafter.draft(request)
+    },
+  })
   const mcpRunner = new McpToolRunner(pool as Db)
   const commitmentService = new CommitmentService(pool as Db)
   const invoicingService = new InvoicingService(pool as Db)
@@ -1143,6 +1168,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           schedule: scheduleService,
           claims: claimFileService,
           statutory: statutoryService,
+          drafter: draftService,
           mcp: mcpRunner,
           commitments: commitmentService,
           invoicing: invoicingService,
