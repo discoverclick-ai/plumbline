@@ -169,14 +169,16 @@ describe('numbers nobody stored', () => {
       description: 'Electrical subcontract',
       originalAmount: '1250000.00',
     })
-    // Subcontract signed for 1.2M, 300k billed so far, and a 90k change
-    // sitting unapproved.
+    // 1.2M brought across from the accounting system, 300k billed so far,
+    // and a 90k change sitting unapproved. A committed figure from an ERP
+    // import lands here; one from a signed subcontract comes from the
+    // commitment itself, which the commitments suite covers.
     await budget.recordCost(pm, {
       projectId,
       budgetCodeId: electrical,
       kind: 'committed',
       amount: '1200000.00',
-      description: 'Nimbus Electric subcontract',
+      description: 'Imported from Sage: Nimbus Electric subcontract',
     })
     await budget.recordCost(pm, {
       projectId,
