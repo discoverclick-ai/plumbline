@@ -274,3 +274,33 @@ describe('putting a budget together', () => {
     expect(screen.queryByRole('button', { name: 'Add a line' })).not.toBeInTheDocument()
   })
 })
+
+describe('writing a subcontract in', () => {
+  it('creates it unsigned, and says so', async () => {
+    renderAsUser(harness, pmToken, <Budget projectId={project.projectId} projectName={project.projectName} />)
+    await userEvent.click(await screen.findByRole('tab', { name: /Commitments/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'New commitment' }))
+
+    // An unsigned contract counts for nothing against the budget, so a form
+    // that signed on save would put a number in the committed column for
+    // work nobody has agreed to do.
+    expect(await screen.findByText(/An unsigned contract counts for nothing/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create as draft' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /execute|sign/i })).not.toBeInTheDocument()
+  })
+
+  it('offers only companies that can hold a contract', async () => {
+    renderAsUser(harness, pmToken, <Budget projectId={project.projectId} projectName={project.projectName} />)
+    await userEvent.click(await screen.findByRole('tab', { name: /Commitments/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'New commitment' }))
+
+    const vendor = await screen.findByRole('combobox', { name: /Vendor/ })
+    // The directory arrives after the panel does.
+    await waitFor(() => expect(within(vendor).getAllByRole('option').length).toBeGreaterThan(1))
+    const options = within(vendor).getAllByRole('option').map((o) => o.textContent)
+    // Offering the architect as the vendor on a subcontract is offering a
+    // mistake.
+    expect(options.some((o) => o?.includes('Web Electric'))).toBe(true)
+    expect(options.some((o) => o?.includes('Architects'))).toBe(false)
+  })
+})

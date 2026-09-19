@@ -4,6 +4,7 @@ import { ToolLandingPage } from '../layouts/index.js'
 import { useSession } from '../session/SessionProvider.tsx'
 import { Banner, Button, Card, Pill, Spinner, Table, Tabs } from '../ui/index.js'
 import { BudgetSetup } from './BudgetSetup.tsx'
+import { NewCommitment } from './NewCommitment.tsx'
 
 /**
  * The money.
@@ -134,15 +135,18 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
         actions={
           // Only where cost figures are visible. Somebody who may see the
           // scope and not the money has no business setting the money.
-          costsVisible && tab === 'budget' ? (
+          costsVisible ? (
             <Button variant="ghost" onClick={() => setEditing((on) => !on)}>
-              {editing ? 'Done' : 'Add a line'}
+              {editing ? 'Done' : tab === 'budget' ? 'Add a line' : 'New commitment'}
             </Button>
           ) : undefined
         }
       >
         {editing && tab === 'budget' ? (
           <BudgetSetup projectId={projectId} onAdded={() => setReloadToken((n) => n + 1)} />
+        ) : null}
+        {editing && tab === 'commitments' ? (
+          <NewCommitment projectId={projectId} onCreated={() => setReloadToken((n) => n + 1)} />
         ) : null}
         {loading ? (
           <Spinner label="Loading the budget" />

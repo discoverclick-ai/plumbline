@@ -858,6 +858,36 @@ export class ApiClient {
     return this.request('POST', `/projects/${projectId}/budget/lines`, input)
   }
 
+  createCommitment(
+    projectId: string,
+    input: {
+      kind: 'subcontract' | 'purchase_order'
+      number: string
+      title: string
+      vendorOrgId: string
+      retainagePercent?: string
+      lines: { budgetCodeId: string; description: string; amount: string }[]
+    },
+  ): Promise<{ id: string }> {
+    return this.request('POST', `/projects/${projectId}/commitments`, input)
+  }
+
+  executeCommitment(commitmentId: string, executedOn?: string): Promise<{ ok: true }> {
+    return this.request('POST', `/commitments/${commitmentId}/execute`, { executedOn })
+  }
+
+  createInvoice(
+    commitmentId: string,
+    input: {
+      number: string
+      periodStart: string
+      periodEnd: string
+      lines: { commitmentLineId: string; amount: string }[]
+    },
+  ): Promise<{ id: string }> {
+    return this.request('POST', `/commitments/${commitmentId}/invoices`, input)
+  }
+
   invoices(commitmentId: string): Promise<{ invoices: InvoiceView[] }> {
     return this.request('GET', `/commitments/${commitmentId}/invoices`)
   }
