@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ClauseView, ClockView, ContractDocumentView, ObligationView, StatutoryClockView } from '../api/client.js'
 import { ToolLandingPage } from '../layouts/index.js'
 import { useSession } from '../session/SessionProvider.tsx'
-import { Banner, Button, Card, EmptyState, Pill, Spinner, Table, Tabs } from '../ui/index.js'
+import { Banner, Button, Card, EmptyState, Input, Pill, Select, Spinner, Table, Tabs } from '../ui/index.js'
+import { UploadPanel } from './UploadPanel.tsx'
 
 /**
  * The contract profile, and the clocks it produces.
@@ -259,9 +260,10 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
           onSelect={(key) => setTab(key as 'clocks' | 'statutory' | 'profile')}
           tabs={[
             ...(clocks === null ? [] : [{ key: 'clocks', label: 'Clocks', badge: running.length }]),
-            ...(statutory === null || statutory.length === 0
-              ? []
-              : [{ key: 'statutory', label: 'Lien & bond', badge: statutory.length }]),
+            // Shown even with nothing running: the form that starts these
+            // lives here, so hiding the tab until a clock exists makes the
+            // whole subsystem unreachable.
+            ...(statutory === null ? [] : [{ key: 'statutory', label: 'Lien & bond', badge: statutory.length }]),
             { key: 'profile', label: 'Contract Profile', badge: proposed.length },
           ]}
         />
@@ -287,7 +289,13 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
           <Spinner label="Loading the contracts" />
         </Card>
       ) : tab === 'statutory' && statutory !== null ? (
-        <StatutoryClocks clocks={statutory} />
+        <>
+          <StatutoryFacts
+            projectId={projectId}
+            onSwept={() => void api.statutoryClocks(projectId).then((r) => setStatutory(r.clocks))}
+          />
+          <StatutoryClocks clocks={statutory} />
+        </>
       ) : tab === 'clocks' && clocks !== null ? (
         <Card
           title="Running deadlines"
@@ -457,6 +465,42 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
         </Card>
       ) : (
         <>
+          {/*
+            Upload and segment in one action. Two buttons would leave
+            documents sitting in 'uploaded' forever, because segmenting is
+            not a thing anybody would think to go back and do.
+          */}
+          <UploadPanel
+            title="Add an instrument"
+            description="The contract as text. It is cut into citable clauses immediately; nothing is read by a model until somebody asks for it."
+            accept=".txt,.md,text/plain"
+            nameLabel="Title"
+            namePlaceholder="Owner Prime Contract"
+            kinds={Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }))}
+            onUpload={async ({ name, kind, text }) => {
+              const created = await api.createContract(projectId, { kind, title: name })
+              const segmented = await api.segmentContract(created.id, text)
+              const refreshed = await api.contracts(projectId)
+              setDocuments(refreshed.documents)
+              setSelected(created.id)
+
+              return segmented.needsManualSegmentation
+                ? {
+                    ok: false,
+                    // Said plainly rather than stored as a confident carve-up.
+                    // A document segmented badly is an invisible gap; one
+                    // nobody segmented is a visible one.
+                    headline: 'The clause numbering could not be read, so nothing was segmented.',
+                    detail: segmented.reason ? [segmented.reason] : [],
+                  }
+                : {
+                    ok: true,
+                    headline: `${segmented.clauses.length} clauses, numbered ${segmented.scheme ?? 'unknown'}-style.`,
+                    detail: [],
+                  }
+            }}
+          />
+
           <Card title="Instruments">
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {documents.length === 0 ? (
@@ -702,6 +746,136 @@ function Computation({ clock }: { clock: ClockView }) {
  * look up in thirty seconds is one they will act on, and one they cannot is
  * one they will ignore.
  */
+/**
+ * The dates that start a lien clock.
+ *
+ * Three of them and none is optional: where the job is, what kind of work it
+ * is, and where this company sits in the chain ON THIS JOB. The same
+ * contractor is a general contractor on one job and a second tier sub on the
+ * next, and the deadline is different for each; defaulting any of the three
+ * would be guessing at the answer that matters most.
+ *
+ * Saving sweeps immediately. A date typed into a form and a deadline
+ * appearing on a screen should be one action: making somebody press a second
+ * button is how a lien window gets recorded and never watched.
+ */
+function StatutoryFacts({ projectId, onSwept }: { projectId: string; onSwept: () => void }) {
+  const { api } = useSession()
+  const [jurisdiction, setJurisdiction] = useState('')
+  const [role, setRole] = useState('general_contractor')
+  const [projectType, setProjectType] = useState('private')
+  const [firstFurnishing, setFirstFurnishing] = useState('')
+  const [lastFurnishing, setLastFurnishing] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ started: number; skipped: { citation: string; reason: string }[]; unverified: { citation: string; summary: string }[] } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  return (
+    <Card title="Where this job is, and where you sit on it">
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+          Jurisdiction
+          <Input value={jurisdiction} onChange={setJurisdiction} placeholder="CO, or US-MILLER for federal work" />
+        </label>
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+          Your role on this job
+          <Select
+            value={role}
+            onChange={setRole}
+            placeholder="General contractor"
+            options={[
+              { value: 'general_contractor', label: 'General contractor' },
+              { value: 'first_tier_subcontractor', label: 'First tier subcontractor' },
+              { value: 'second_tier_subcontractor', label: 'Second tier subcontractor' },
+              { value: 'supplier_to_gc', label: 'Supplier to the GC' },
+              { value: 'supplier_to_sub', label: 'Supplier to a sub' },
+              { value: 'design_professional', label: 'Design professional' },
+              { value: 'equipment_lessor', label: 'Equipment lessor' },
+            ]}
+          />
+        </label>
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+          Work
+          <Select
+            value={projectType}
+            onChange={setProjectType}
+            placeholder="Private"
+            options={[
+              { value: 'private', label: 'Private' },
+              { value: 'public', label: 'Public' },
+              { value: 'federal', label: 'Federal' },
+            ]}
+          />
+        </label>
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+          First furnishing
+          <Input value={firstFurnishing} onChange={setFirstFurnishing} placeholder="2026-03-02" />
+        </label>
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+          Last furnishing
+          <Input value={lastFurnishing} onChange={setLastFurnishing} placeholder="2026-09-30" />
+        </label>
+        <Button
+          disabled={busy || jurisdiction.trim() === ''}
+          onClick={() => {
+            setBusy(true)
+            setError(null)
+            api
+              .setStatutoryFacts(projectId, {
+                jurisdiction: jurisdiction.trim().toUpperCase(),
+                projectType,
+                claimantRole: role,
+                ...(firstFurnishing ? { firstFurnishing } : {}),
+                ...(lastFurnishing ? { lastFurnishing } : {}),
+              })
+              .then((r) => {
+                setResult(r)
+                onSwept()
+              })
+              .catch((err: unknown) => setError(err instanceof Error ? err.message : 'That did not save'))
+              .finally(() => setBusy(false))
+          }}
+        >
+          {busy ? 'Saving…' : 'Save and check'}
+        </Button>
+      </div>
+
+      {error ? <Banner tone="danger">{error}</Banner> : null}
+
+      {result ? (
+        <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+          <Banner tone="accent">
+            {result.started === 0 ? 'No new deadlines started.' : `${result.started} deadlines now running.`}
+          </Banner>
+          {/*
+            The unverified rules are the important half. An applicable rule
+            nobody has checked against the statute is a deadline that exists
+            whether or not this product knows the number, and a contractor who
+            learns it exists has been given something worth having.
+          */}
+          {result.unverified.length > 0 ? (
+            <Banner tone="warn">
+              {result.unverified.length} {result.unverified.length === 1 ? 'deadline applies' : 'deadlines apply'} to
+              this job that nobody has verified against the current statute, so no clock was started for
+              {result.unverified.length === 1 ? ' it' : ' them'}. Have counsel confirm{' '}
+              {result.unverified.map((u) => u.citation).join(', ')}.
+            </Banner>
+          ) : null}
+          {result.skipped.length > 0 ? (
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--ink-muted)' }}>
+              {result.skipped.map((s) => (
+                <li key={s.citation}>
+                  {s.citation}: {s.reason}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+    </Card>
+  )
+}
+
 function StatutoryClocks({ clocks }: { clocks: StatutoryClockView[] }) {
   return (
     <Card title="Lien and bond deadlines">

@@ -509,6 +509,35 @@ export class ApiClient {
     return this.request('POST', `/proposals/${proposalId}/accept`, edits)
   }
 
+  createContract(
+    projectId: string,
+    input: { kind: string; title: string; counterpartyOrgId?: string; executedAt?: string },
+  ): Promise<{ id: string }> {
+    return this.request('POST', `/projects/${projectId}/contracts`, input)
+  }
+
+  segmentContract(
+    documentId: string,
+    text: string,
+  ): Promise<{ clauses: unknown[]; needsManualSegmentation: boolean; reason: string | null; scheme: string | null }> {
+    return this.request('POST', `/contracts/${documentId}/segment`, { text })
+  }
+
+  importSchedule(
+    projectId: string,
+    name: string,
+    text: string,
+    asBaseline = false,
+  ): Promise<{
+    scheduleId: string
+    imported: number
+    rejected: { reason: string; row: string }[]
+    dataDate: string | null
+    orphanedLinks: { recordDesignation: string; activityCode: string }[]
+  }> {
+    return this.request('POST', `/projects/${projectId}/schedules`, { name, text, asBaseline })
+  }
+
   contracts(projectId: string): Promise<{ documents: ContractDocumentView[] }> {
     return this.request('GET', `/projects/${projectId}/contracts`)
   }
@@ -626,6 +655,50 @@ export class ApiClient {
   sheets(projectId: string, discipline?: string): Promise<{ sheets: SheetView[] }> {
     const suffix = discipline ? `?discipline=${encodeURIComponent(discipline)}` : ''
     return this.request('GET', `/projects/${projectId}/drawings${suffix}`)
+  }
+
+  createDrawingSet(projectId: string, name: string, issuedOn: string): Promise<{ id: string }> {
+    return this.request('POST', `/projects/${projectId}/drawing-sets`, { name, issuedOn })
+  }
+
+  /**
+   * One sheet, as bytes. The metadata rides in headers rather than a
+   * multipart body: a sheet is a single PDF, and multipart would mean a
+   * parser on the server for a form with one file in it.
+   */
+  async uploadSheet(
+    setId: string,
+    file: File,
+    sheet: { number: string; title: string; discipline?: string; revision?: string },
+  ): Promise<{ drawingId: string; revisionId: string; sequence: number }> {
+    const response = await fetch(`${this.baseUrl}/drawing-sets/${setId}/sheets`, {
+      method: 'POST',
+      headers: {
+        'content-type': file.type || 'application/pdf',
+        // Encoded, because a sheet title with a non-ASCII character in a raw
+        // header is a request the server rejects with nothing useful to say.
+        'x-sheet-number': encodeURIComponent(sheet.number),
+        'x-sheet-title': encodeURIComponent(sheet.title),
+        ...(sheet.discipline ? { 'x-discipline': encodeURIComponent(sheet.discipline) } : {}),
+        'x-revision': encodeURIComponent(sheet.revision ?? '0'),
+        'x-filename': encodeURIComponent(file.name),
+        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+      },
+      body: file,
+    })
+    const parsed = (await response.json()) as { error?: string; message?: string } & {
+      drawingId: string
+      revisionId: string
+      sequence: number
+    }
+    if (!response.ok) {
+      throw new ApiError(response.status, parsed.error ?? 'upload_failed', parsed.message ?? 'That sheet was refused')
+    }
+    return parsed
+  }
+
+  publishDrawingSet(setId: string): Promise<{ ok: true }> {
+    return this.request('POST', `/drawing-sets/${setId}/publish`)
   }
 
   pins(drawingId: string): Promise<{ pins: PinView[] }> {

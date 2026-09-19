@@ -3,6 +3,7 @@ import type { ActivityView, ExposureView } from '../api/client.js'
 import { ToolLandingPage } from '../layouts/index.js'
 import { useSession } from '../session/SessionProvider.tsx'
 import { Banner, Card, EmptyState, Pill, Spinner, Table, Tabs } from '../ui/index.js'
+import { UploadPanel } from './UploadPanel.tsx'
 
 /**
  * The morning meeting, as a page.
@@ -61,7 +62,7 @@ export function startsIn(startAt: string | null, now: Date = new Date()): string
 
 export function Lookahead({ projectId, projectName }: { projectId: string; projectName: string }) {
   const { api } = useSession()
-  const [tab, setTab] = useState<'exposure' | 'lookahead'>('exposure')
+  const [tab, setTab] = useState<'exposure' | 'lookahead' | 'import'>('exposure')
   const [exposure, setExposure] = useState<ExposureView[]>([])
   const [activities, setActivities] = useState<ActivityView[]>([])
   const [weeks, setWeeks] = useState(3)
@@ -98,10 +99,11 @@ export function Lookahead({ projectId, projectName }: { projectId: string; proje
       tabs={
         <Tabs
           active={tab}
-          onSelect={(key) => setTab(key as 'exposure' | 'lookahead')}
+          onSelect={(key) => setTab(key as 'exposure' | 'lookahead' | 'import')}
           tabs={[
             { key: 'exposure', label: 'What is in the way', badge: exposure.length },
             { key: 'lookahead', label: `${weeks} week lookahead`, badge: activities.length },
+            { key: 'import', label: 'Import an update' },
           ]}
         />
       }
@@ -120,6 +122,31 @@ export function Lookahead({ projectId, projectName }: { projectId: string; proje
         <Card>
           <Spinner label="Loading the schedule" />
         </Card>
+      ) : tab === 'import' ? (
+        <UploadPanel
+          title="Import a schedule update"
+          description="A Primavera P6 .xer export. Every import is kept: the old schedule is never overwritten, because 'the schedule said we had four days of float when we raised this' is the sentence a delay claim is built on."
+          accept=".xer,text/plain"
+          nameLabel="What to call this update"
+          namePlaceholder="Update 4"
+          onUpload={async ({ name, text }) => {
+            const result = await api.importSchedule(projectId, name, text)
+            setWeeks((w) => w) // force the effect to re-read the new current schedule
+            return {
+              ok: true,
+              headline: `${result.imported} activities imported${result.dataDate ? `, data date ${result.dataDate}` : ''}.`,
+              detail: [
+                // Both lists, always. A row the parser refused and a link that
+                // now points at nothing are the two things somebody has to
+                // know about before they run a meeting off this.
+                ...result.rejected.map((r) => `Refused: ${r.row} — ${r.reason}`),
+                ...result.orphanedLinks.map(
+                  (o) => `${o.recordDesignation} was linked to ${o.activityCode}, which is not in this update.`,
+                ),
+              ],
+            }
+          }}
+        />
       ) : tab === 'exposure' ? (
         <Card title="Ordered by how little room is left">
           <Table

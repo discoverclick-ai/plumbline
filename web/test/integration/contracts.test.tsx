@@ -269,3 +269,48 @@ describe('drafting from the clock', () => {
     expect(within(row).getByText('watching')).toBeInTheDocument()
   })
 })
+
+describe('getting a contract in', () => {
+  it('uploads and segments in one action', async () => {
+    renderAsUser(harness, pmToken, <Contracts projectId={project.projectId} projectName={project.projectName} />)
+    await userEvent.click(await screen.findByRole('tab', { name: /Contract Profile/ }))
+
+    // Two buttons would leave documents sitting in 'uploaded' forever,
+    // because segmenting is not a thing anybody would think to go back and
+    // do.
+    expect(await screen.findByText('Add an instrument')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^segment$/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('the lien dates', () => {
+  it('insists on the three facts that change the answer', async () => {
+    renderAsUser(harness, pmToken, <Contracts projectId={project.projectId} projectName={project.projectName} />)
+    await userEvent.click(await screen.findByRole('tab', { name: /Lien & bond/ }))
+
+    // The same contractor is a GC on one job and a second tier sub on the
+    // next, and the deadline is different for each.
+    expect(await screen.findByText('Where this job is, and where you sit on it')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/US-MILLER/)).toBeInTheDocument()
+    // Nothing can be saved without a jurisdiction, because defaulting it
+    // would be guessing at the answer that matters most.
+    expect(screen.getByRole('button', { name: 'Save and check' })).toBeDisabled()
+  })
+
+  it('names the deadlines nobody has verified rather than hiding them', async () => {
+    renderAsUser(harness, pmToken, <Contracts projectId={project.projectId} projectName={project.projectName} />)
+    await userEvent.click(await screen.findByRole('tab', { name: /Lien & bond/ }))
+
+    await userEvent.type(await screen.findByPlaceholderText(/US-MILLER/), 'US-MILLER')
+    await userEvent.selectOptions(screen.getAllByRole('combobox')[0]!, 'first_tier_subcontractor')
+    await userEvent.selectOptions(screen.getAllByRole('combobox')[1]!, 'federal')
+    await userEvent.type(screen.getByPlaceholderText('2026-09-30'), '2026-03-02')
+    await userEvent.click(screen.getByRole('button', { name: 'Save and check' }))
+
+    // The product ships with every rule unverified, so this is the normal
+    // first answer: no clocks started, and the citations to have counsel
+    // confirm named on screen.
+    const warning = await screen.findByText(/nobody has verified/)
+    expect(warning.textContent).toMatch(/40 U\.S\.C/)
+  })
+})

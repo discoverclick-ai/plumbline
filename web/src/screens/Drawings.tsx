@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PinView, SheetView } from '../api/client.js'
 import { ToolLandingPage } from '../layouts/index.js'
 import { useSession } from '../session/SessionProvider.tsx'
-import { Banner, Button, Card, EmptyState, Pill, Select, Spinner } from '../ui/index.js'
+import { Banner, Button, Card, EmptyState, Input, Pill, Select, Spinner } from '../ui/index.js'
 
 /**
  * Drawings.
@@ -68,6 +68,8 @@ export function Drawings({ projectId, projectName }: { projectId: string; projec
   const [discipline, setDiscipline] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [reloadToken, setReloadToken] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -88,7 +90,7 @@ export function Drawings({ projectId, projectName }: { projectId: string; projec
     return () => {
       cancelled = true
     }
-  }, [api, projectId, discipline])
+  }, [api, projectId, discipline, reloadToken])
 
   useEffect(() => {
     if (!selected) return
@@ -132,16 +134,30 @@ export function Drawings({ projectId, projectName }: { projectId: string; projec
         <Card
           title="Sheets"
           actions={
-            disciplines.length > 1 ? (
+            <>
+              <Button variant="ghost" onClick={() => setUploading((on) => !on)}>
+                {uploading ? 'Done' : 'Add a set'}
+              </Button>
+              {disciplines.length > 1 ? (
               <Select
                 value={discipline}
                 onChange={setDiscipline}
                 placeholder="All disciplines"
                 options={disciplines.map((d) => ({ value: d, label: d }))}
-              />
-            ) : undefined
+                />
+              ) : null}
+            </>
           }
         >
+          {uploading ? (
+            <SetUploader
+              projectId={projectId}
+              onPublished={() => {
+                setUploading(false)
+                setReloadToken((n) => n + 1)
+              }}
+            />
+          ) : null}
           {loading ? (
             <Spinner label="Loading the drawing index" />
           ) : sheets.length === 0 ? (
@@ -210,6 +226,121 @@ export function Drawings({ projectId, projectName }: { projectId: string; projec
  * The single most expensive mistake this screen can make is showing a
  * superseded sheet without saying so.
  */
+/**
+ * A set, then its sheets, then publish.
+ *
+ * Three steps in that order and not collapsible into one, because that order
+ * IS the safety property: nothing a set contains is current until the set is
+ * published, and a crew building from a check set is the accident this whole
+ * tool exists to prevent. A one-click "upload and go live" would remove the
+ * only moment anybody checks.
+ */
+function SetUploader({ projectId, onPublished }: { projectId: string; onPublished: () => void }) {
+  const { api } = useSession()
+  const [name, setName] = useState('')
+  const [issuedOn, setIssuedOn] = useState('')
+  const [setId, setSetId] = useState<string | null>(null)
+  const [added, setAdded] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
+
+  async function addSheets(files: FileList): Promise<void> {
+    if (!setId) return
+    setBusy(true)
+    setError(null)
+    try {
+      for (const file of [...files]) {
+        // The sheet number and title come from the filename by convention:
+        // "A-101 Level 1 Plan.pdf". Somebody uploading ninety sheets is not
+        // going to type ninety titles, and a wrong title is fixable where a
+        // refused upload is just a wall.
+        const base = file.name.replace(/\.[^.]+$/, '')
+        const match = /^([A-Za-z]+-?[\w.]+)[\s_-]+(.*)$/.exec(base)
+        await api.uploadSheet(setId, file, {
+          number: match?.[1] ?? base,
+          title: match?.[2]?.trim() || base,
+        })
+        setAdded((current) => [...current, base])
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'That sheet was refused')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={{ padding: 12, background: 'var(--surface-sunken)', borderRadius: 8, marginBottom: 12 }}>
+      {error ? <Banner tone="danger">{error}</Banner> : null}
+
+      {setId === null ? (
+        <div style={{ display: 'grid', gap: 8 }}>
+          <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+            Set name
+            <Input value={name} onChange={setName} placeholder="Permit Set" />
+          </label>
+          <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+            Issued on
+            <Input value={issuedOn} onChange={setIssuedOn} placeholder="2026-03-02" />
+          </label>
+          <Button
+            disabled={busy || name.trim() === '' || issuedOn.trim() === ''}
+            onClick={() => {
+              setBusy(true)
+              api
+                .createDrawingSet(projectId, name.trim(), issuedOn.trim())
+                .then((created) => setSetId(created.id))
+                .catch((err: unknown) => setError(err instanceof Error ? err.message : 'That set was refused'))
+                .finally(() => setBusy(false))
+            }}
+          >
+            {busy ? 'Creating…' : 'Create the set'}
+          </Button>
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gap: 8 }}>
+          <p style={{ margin: 0, fontSize: 13 }}>
+            <strong>{name}</strong> · {added.length} {added.length === 1 ? 'sheet' : 'sheets'} added
+          </p>
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--ink-muted)' }}>
+            Nothing here is current until the set is published. Name files like “A-101 Level 1 Plan.pdf”.
+          </p>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="application/pdf"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(event) => {
+              if (event.target.files?.length) void addSheets(event.target.files)
+              event.target.value = ''
+            }}
+          />
+          <div style={{ display: 'flex', gap: 6 }}>
+            <Button variant="ghost" onClick={() => fileInput.current?.click()} disabled={busy}>
+              {busy ? 'Uploading…' : 'Add sheets'}
+            </Button>
+            <Button
+              disabled={busy || added.length === 0}
+              onClick={() => {
+                setBusy(true)
+                api
+                  .publishDrawingSet(setId)
+                  .then(() => onPublished())
+                  .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Publishing was refused'))
+                  .finally(() => setBusy(false))
+              }}
+            >
+              Publish the set
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SheetViewer({
   sheet,
   projectId,

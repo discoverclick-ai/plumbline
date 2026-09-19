@@ -220,3 +220,31 @@ describe('placing a pin', () => {
     expect(await screen.findByText(/Embedment at grid C4/)).toBeInTheDocument()
   })
 })
+
+describe('getting a set in', () => {
+  it('makes you publish, rather than going live on upload', async () => {
+    renderAsUser(harness, pmToken, <Drawings projectId={project.projectId} projectName={project.projectName} />)
+    await screen.findByText('A-101')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Add a set' }))
+    await userEvent.type(await screen.findByPlaceholderText('Permit Set'), 'Revision 2')
+    await userEvent.type(screen.getByPlaceholderText('2026-03-02'), '2026-05-01')
+    await userEvent.click(screen.getByRole('button', { name: 'Create the set' }))
+
+    // Three steps in that order, and the order IS the safety property.
+    // Nothing a set contains is current until it is published, and a
+    // one-click "upload and go live" would remove the only moment anybody
+    // checks.
+    expect(await screen.findByText(/Nothing here is current until the set is published/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Publish the set' })).toBeDisabled()
+  })
+
+  it('does not make somebody type ninety sheet titles', async () => {
+    // "A-101 Level 1 Plan.pdf" carries its own number and title. A wrong
+    // title is fixable; a refused upload is a wall.
+    const base = 'A-205 Enlarged Stair Plans'
+    const match = /^([A-Za-z]+-?[\w.]+)[\s_-]+(.*)$/.exec(base)
+    expect(match?.[1]).toBe('A-205')
+    expect(match?.[2]).toBe('Enlarged Stair Plans')
+  })
+})
