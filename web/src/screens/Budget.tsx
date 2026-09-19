@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
-import type { BudgetLineView, CommitmentView } from '../api/client.js'
+import { useCallback, useEffect, useState } from 'react'
+import type { BudgetLineView, CommitmentView, InvoiceView } from '../api/client.js'
 import { ToolLandingPage } from '../layouts/index.js'
 import { useSession } from '../session/SessionProvider.tsx'
-import { Banner, Card, Pill, Spinner, Table, Tabs } from '../ui/index.js'
+import { Banner, Button, Card, Pill, Spinner, Table, Tabs } from '../ui/index.js'
 
 /**
  * The money.
@@ -54,6 +54,9 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
   const [lines, setLines] = useState<BudgetLineView[]>([])
   const [costsVisible, setCostsVisible] = useState(true)
   const [commitments, setCommitments] = useState<CommitmentView[] | null>([])
+  const [openCommitment, setOpenCommitment] = useState<CommitmentView | null>(null)
+  const setBilling = (row: CommitmentView): void =>
+    setOpenCommitment((current) => (current?.commitmentId === row.commitmentId ? null : row))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -300,11 +303,213 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
                 width: '150px',
                 render: (row) => <Money value={row.currentValue} strong />,
               },
+              {
+                key: 'billing',
+                header: '',
+                width: '120px',
+                render: (row) => (
+                  <Button variant="ghost" onClick={() => setBilling(row)}>
+                    {openCommitment?.commitmentId === row.commitmentId ? 'Hide billing' : 'Billing'}
+                  </Button>
+                ),
+              },
             ]}
           />
         )}
       </Card>
+
+      {openCommitment ? (
+        <Billing
+          commitment={openCommitment}
+          costsVisible={costsVisible}
+          onChanged={() => {
+            // Refresh the commitment figures, NOT the panel. An earlier
+            // version called the toggle here, so approving an application
+            // closed the screen you were working on.
+            void api.commitments(projectId).then((r) => setCommitments(r.commitments))
+          }}
+        />
+      ) : null}
     </ToolLandingPage>
+  )
+}
+
+const INVOICE_TONE: Record<string, 'neutral' | 'warn' | 'ok' | 'danger'> = {
+  draft: 'neutral',
+  submitted: 'warn',
+  under_review: 'warn',
+  approved: 'ok',
+  paid: 'ok',
+  rejected: 'danger',
+  void: 'neutral',
+}
+
+/**
+ * The pay application cycle, against one commitment.
+ *
+ * A general contractor's month IS this screen: what was billed, what is held
+ * back, whether the lien waiver arrived, and whether it can be paid. The
+ * whole subsystem had no client at all, which meant every invoice in the
+ * product had to be driven by curl.
+ *
+ * The two rules that matter are both the server's and both shown rather than
+ * enforced here: money is never recomputed in this client, and paying before
+ * the lien waiver is recorded is refused. The button is disabled with the
+ * reason next to it rather than hidden, because a missing button teaches
+ * nobody what to go and get.
+ */
+function Billing({
+  commitment,
+  costsVisible,
+  onChanged,
+}: {
+  commitment: CommitmentView
+  costsVisible: boolean
+  onChanged: () => void
+}) {
+  const { api } = useSession()
+  const [invoices, setInvoices] = useState<InvoiceView[] | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const reload = useCallback((): void => {
+    api
+      .invoices(commitment.commitmentId)
+      .then((r) => setInvoices(r.invoices))
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : 'Could not load the billing')
+        setInvoices([])
+      })
+  }, [api, commitment.commitmentId])
+
+  useEffect(reload, [reload])
+
+  async function act(invoice: InvoiceView, what: 'submit' | 'approve' | 'waiver' | 'pay'): Promise<void> {
+    setBusy(invoice.invoiceId)
+    setError(null)
+    try {
+      if (what === 'submit') await api.submitInvoice(invoice.invoiceId)
+      else if (what === 'approve') await api.approveInvoice(invoice.invoiceId)
+      else if (what === 'waiver') await api.recordLienWaiver(invoice.invoiceId)
+      else await api.payInvoice(invoice.invoiceId)
+      reload()
+      onChanged()
+    } catch (err) {
+      // The server's refusal, verbatim. It knows why — an unsigned
+      // commitment, a missing waiver, a step out of order — and paraphrasing
+      // it here would produce two explanations that drift apart.
+      setError(err instanceof Error ? err.message : 'That did not go through')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <Card title={`Billing · ${commitment.number} ${commitment.title}`}>
+      {error ? <Banner tone="danger">{error}</Banner> : null}
+      {invoices === null ? (
+        <Spinner label="Loading the billing" />
+      ) : (
+        <Table
+          rows={invoices}
+          rowKey={(row) => row.invoiceId}
+          empty={
+            <p style={{ margin: 0, color: 'var(--ink-muted)' }}>
+              Nothing billed against this commitment yet.
+            </p>
+          }
+          columns={[
+            {
+              key: 'number',
+              header: 'Application',
+              width: '150px',
+              render: (row: InvoiceView) => (
+                <>
+                  <strong style={{ fontVariantNumeric: 'tabular-nums' }}>{row.number}</strong>
+                  <div style={{ fontSize: 12, color: 'var(--ink-muted)' }}>
+                    {row.periodStart.slice(0, 10)} to {row.periodEnd.slice(0, 10)}
+                  </div>
+                </>
+              ),
+            },
+            {
+              key: 'status',
+              header: 'Status',
+              width: '140px',
+              render: (row: InvoiceView) => (
+                <Pill tone={INVOICE_TONE[row.status] ?? 'neutral'}>{row.status.replace(/_/g, ' ')}</Pill>
+              ),
+            },
+            ...(costsVisible
+              ? ([
+                  {
+                    key: 'billed',
+                    header: 'This period',
+                    width: '140px',
+                    render: (row: InvoiceView) => <Money value={row.billedThisPeriod} />,
+                  },
+                  {
+                    key: 'retainage',
+                    header: 'Retainage held',
+                    width: '150px',
+                    secondary: true,
+                    render: (row: InvoiceView) => <Money value={row.retainageWithheld} />,
+                  },
+                  {
+                    key: 'due',
+                    header: 'Due',
+                    width: '140px',
+                    render: (row: InvoiceView) => <Money value={row.amountDue} strong />,
+                  },
+                ] as const)
+              : []),
+            {
+              key: 'waiver',
+              header: 'Lien waiver',
+              width: '140px',
+              render: (row: InvoiceView) =>
+                row.lienWaiverReceived ? (
+                  <Pill tone="ok">Received</Pill>
+                ) : (
+                  <Button variant="ghost" onClick={() => void act(row, 'waiver')} disabled={busy === row.invoiceId}>
+                    Record it
+                  </Button>
+                ),
+            },
+            {
+              key: 'act',
+              header: '',
+              width: '200px',
+              render: (row: InvoiceView) => (
+                <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                  {row.status === 'draft' ? (
+                    <Button onClick={() => void act(row, 'submit')} disabled={busy === row.invoiceId}>
+                      Submit
+                    </Button>
+                  ) : null}
+                  {row.status === 'submitted' || row.status === 'under_review' ? (
+                    <Button onClick={() => void act(row, 'approve')} disabled={busy === row.invoiceId}>
+                      Approve
+                    </Button>
+                  ) : null}
+                  {row.status === 'approved' ? (
+                    <Button
+                      onClick={() => void act(row, 'pay')}
+                      // Disabled with the reason beside it rather than hidden.
+                      // A missing button teaches nobody what to go and get.
+                      disabled={busy === row.invoiceId || !row.lienWaiverReceived}
+                      title={row.lienWaiverReceived ? undefined : 'The lien waiver has not been recorded'}
+                    >
+                      Pay
+                    </Button>
+                  ) : null}
+                </div>
+              ),
+            },
+          ]}
+        />
+      )}
+    </Card>
   )
 }
 

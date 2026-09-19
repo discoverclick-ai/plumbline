@@ -346,6 +346,21 @@ export interface StatutoryClockView {
   computation: Record<string, unknown>
 }
 
+export interface InvoiceView {
+  invoiceId: string
+  commitmentId: string
+  number: string
+  status: 'draft' | 'submitted' | 'under_review' | 'approved' | 'rejected' | 'paid' | 'void'
+  periodStart: string
+  periodEnd: string
+  lienWaiverReceived: boolean
+  /** Money stays a string the whole way through. */
+  billedThisPeriod: string
+  retainageWithheld: string
+  retainageReleased: string
+  amountDue: string
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -648,6 +663,30 @@ export class ApiClient {
 
   clocks(projectId: string): Promise<{ clocks: ClockView[] }> {
     return this.request('GET', `/projects/${projectId}/clocks`)
+  }
+
+  invoices(commitmentId: string): Promise<{ invoices: InvoiceView[] }> {
+    return this.request('GET', `/commitments/${commitmentId}/invoices`)
+  }
+
+  submitInvoice(invoiceId: string): Promise<{ ok: true }> {
+    return this.request('POST', `/invoices/${invoiceId}/submit`)
+  }
+
+  approveInvoice(invoiceId: string): Promise<{ ok: true }> {
+    return this.request('POST', `/invoices/${invoiceId}/approve`)
+  }
+
+  rejectInvoice(invoiceId: string, reason: string): Promise<{ ok: true }> {
+    return this.request('POST', `/invoices/${invoiceId}/reject`, { reason })
+  }
+
+  recordLienWaiver(invoiceId: string): Promise<{ ok: true }> {
+    return this.request('POST', `/invoices/${invoiceId}/lien-waiver`)
+  }
+
+  payInvoice(invoiceId: string): Promise<{ ok: true }> {
+    return this.request('POST', `/invoices/${invoiceId}/pay`)
   }
 
   statutoryClocks(projectId: string): Promise<{ clocks: StatutoryClockView[] }> {

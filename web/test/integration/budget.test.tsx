@@ -1,7 +1,16 @@
-import { cleanup, screen, within } from '@testing-library/react'
+import { cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterAll, afterEach, beforeAll, describe, expect, inject, it } from 'vitest'
-import { BudgetService, CommitmentService, createPool, provisionTenant, withTenant, createBudgetCode, createOrganization } from '@plumbline/shared'
+import {
+  BudgetService,
+  CommitmentService,
+  InvoicingService,
+  createBudgetCode,
+  createOrganization,
+  createPool,
+  provisionTenant,
+  withTenant,
+} from '@plumbline/shared'
 import { Budget, formatMoney, trimZeros } from '../../src/screens/Budget.tsx'
 import { renderAsUser, seedProject, startHarness, tokenFor, type Harness, type SeededProject } from '../support/harness.tsx'
 
@@ -168,5 +177,63 @@ describe('trimming quantities', () => {
     expect(trimZeros('1000')).toBe('1000')
     expect(trimZeros('12.5000')).toBe('12.5')
     expect(trimZeros('12.0000')).toBe('12')
+  })
+})
+
+describe('the pay application cycle', () => {
+  it('walks an application from draft to paid, and refuses to pay before the waiver', async () => {
+    const pool = createPool({ connectionString: inject('databaseUrl') })
+    try {
+      const invoicing = new InvoicingService(pool)
+      const commitments = new CommitmentService(pool)
+      const pm = { tenantId: project.tenantId, userId: project.users.pm.id }
+
+      const [commitment] = await commitments.summary(pm, project.projectId)
+      const { rows: lineRows } = await pool.query<{ id: string }>(
+        'SELECT id FROM commitment_lines WHERE commitment_id = $1 ORDER BY sort_order LIMIT 1',
+        [commitment!.commitmentId],
+      )
+
+      const created = await invoicing.createInvoice(pm, {
+        commitmentId: commitment!.commitmentId,
+        number: 'APP-001',
+        periodStart: '2026-03-01',
+        periodEnd: '2026-03-31',
+        lines: [{ commitmentLineId: lineRows[0]!.id, amount: '100000.00' }],
+      })
+
+      // Submitted by the SUBCONTRACTOR, because a general contractor
+      // submitting a sub's own pay application is not something the
+      // permission model allows and should not be: the whole point of the
+      // application is that the sub says what they did.
+      await invoicing.submit({ tenantId: project.tenantId, userId: project.users.trade.id }, created.id)
+
+      renderAsUser(harness, pmToken, <Budget projectId={project.projectId} projectName={project.projectName} />)
+      await userEvent.click(await screen.findByRole('tab', { name: /Commitments/ }))
+      await userEvent.click(await screen.findByRole('button', { name: 'Billing' }))
+
+      const row = (await screen.findByText('APP-001')).closest('tr') as HTMLElement
+      expect(within(row).getByText('submitted')).toBeInTheDocument()
+
+      await userEvent.click(within(row).getByRole('button', { name: 'Approve' }))
+
+      await waitFor(() => expect(screen.getByText('approved')).toBeInTheDocument())
+      const approved = (await screen.findByText('APP-001')).closest('tr') as HTMLElement
+      // Disabled with the reason beside it rather than hidden. A missing
+      // button teaches nobody what to go and get.
+      const pay = within(approved).getByRole('button', { name: 'Pay' })
+      expect(pay).toBeDisabled()
+      expect(pay.getAttribute('title')).toMatch(/lien waiver/i)
+
+      await userEvent.click(within(approved).getByRole('button', { name: 'Record it' }))
+      await waitFor(() => expect(screen.getByText('Received')).toBeInTheDocument())
+      const waived = (await screen.findByText('APP-001')).closest('tr') as HTMLElement
+      expect(within(waived).getByRole('button', { name: 'Pay' })).toBeEnabled()
+
+      await userEvent.click(within(waived).getByRole('button', { name: 'Pay' }))
+      await waitFor(() => expect(screen.getByText('paid')).toBeInTheDocument())
+    } finally {
+      await pool.end()
+    }
   })
 })
