@@ -96,7 +96,7 @@ afterAll(async () => {
   await pool.end()
 })
 
-const lineFor = async (code: string) => (await budget.summary(pm, projectId)).find((l) => l.budgetCode === code)
+const lineFor = async (code: string) => (await budget.summary(pm, projectId)).lines.find((l) => l.budgetCode === code)
 
 describe('a budget line', () => {
   it('starts as the number somebody bought the job at', async () => {
@@ -205,10 +205,28 @@ describe('numbers nobody stored', () => {
 })
 
 describe('who may see the money', () => {
-  it('shows a superintendent the budget without the dollars', async () => {
+  it('shows a superintendent the scopes and the quantities, and no dollars', async () => {
     // Quantities yes, cost figures no. Putting a job's margin on a jobsite
-    // iPad is how it reaches a subcontractor.
-    await expect(budget.summary(superintendent, projectId)).rejects.toBeInstanceOf(PermissionDeniedError)
+    // iPad is how it reaches a subcontractor. Refusing outright would mean a
+    // Budget tab that opens onto an error, which is worse than no tab.
+    const view = await budget.summary(superintendent, projectId)
+    expect(view.costsVisible).toBe(false)
+    expect(view.lines.length).toBeGreaterThan(0)
+
+    const line = view.lines[0]
+    expect(line?.budgetCode).toBeTruthy()
+    expect(line?.description).toBeTruthy()
+    expect(line?.currentBudget).toBeNull()
+    expect(line?.committedCost).toBeNull()
+    expect(line?.projectedOverUnder).toBeNull()
+  })
+
+  it('still refuses a superintendent the accounting export', async () => {
+    // The summary returns nulls rather than refusing, so anything that hands
+    // over real figures has to ask separately or it leaks the whole budget.
+    await expect(budget.assertCostsVisible(superintendent, projectId)).rejects.toBeInstanceOf(
+      PermissionDeniedError,
+    )
   })
 
   it('shows a trade partner nothing at all', async () => {

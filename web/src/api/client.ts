@@ -117,14 +117,18 @@ export interface BudgetLineView {
   budgetCodeId: string
   budgetCode: string
   description: string
-  originalAmount: string
-  approvedRevisions: string
-  currentBudget: string
-  committedCost: string
-  actualCost: string
-  pendingCost: string
-  projectedCost: string
-  projectedOverUnder: string
+  unitOfMeasure: string | null
+  originalQuantity: string | null
+  quantityToDate: string
+  /** Null for somebody who may see the budget and not what it costs. */
+  originalAmount: string | null
+  approvedRevisions: string | null
+  currentBudget: string | null
+  committedCost: string | null
+  actualCost: string | null
+  pendingCost: string | null
+  projectedCost: string | null
+  projectedOverUnder: string | null
 }
 
 export interface CommitmentView {
@@ -261,7 +265,7 @@ export class ApiClient {
     return this.request('POST', `/projects/${projectId}/captures`, input)
   }
 
-  budget(projectId: string): Promise<{ lines: BudgetLineView[] }> {
+  budget(projectId: string): Promise<{ costsVisible: boolean; lines: BudgetLineView[] }> {
     return this.request('GET', `/projects/${projectId}/budget`)
   }
 

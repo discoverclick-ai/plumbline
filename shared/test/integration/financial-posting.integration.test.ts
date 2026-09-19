@@ -103,7 +103,7 @@ afterAll(async () => {
 })
 
 const concreteLine = async () =>
-  (await budget.summary(gc, projectId)).find((l) => l.budgetCode === '03 00 00.S')
+  (await budget.summary(gc, projectId)).lines.find((l) => l.budgetCode === '03 00 00.S')
 
 async function executedChange(title: string, amount: number, code: string | null) {
   const body = {
@@ -186,7 +186,7 @@ describe('an executed change order reaches the budget', () => {
     const result = await posting.post()
 
     expect(result.skipped.some((s) => s.reason.includes('no budget line'))).toBe(true)
-    const lines = await budget.summary(gc, projectId)
+    const { lines } = await budget.summary(gc, projectId)
     expect(lines.map((l) => l.budgetCode)).not.toContain('31 00 00.S')
   })
 })

@@ -221,7 +221,7 @@ describe('nothing gets paid without a lien waiver', () => {
     // And paid money is actual cost, posted here rather than by a separate
     // hand: a payment the job cost report never saw is how a project shows a
     // profit it does not have.
-    const line = (await budget.summary(gc, projectId)).find((l) => l.budgetCode === '26 00 00.S')
+    const line = (await budget.summary(gc, projectId)).lines.find((l) => l.budgetCode === '26 00 00.S')
     expect(line?.actualCost).toBe('252000.00')
   })
 

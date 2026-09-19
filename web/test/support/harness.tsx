@@ -92,7 +92,7 @@ export interface SeededProject {
   tenantId: string
   projectId: string
   projectName: string
-  users: Record<'pm' | 'architect' | 'trade', { id: string; email: string }>
+  users: Record<'pm' | 'superintendent' | 'architect' | 'trade', { id: string; email: string }>
 }
 
 const PASSWORD = 'a-long-enough-password'
@@ -139,6 +139,14 @@ export async function seedProject(pool: Pool, tenantId: string, label: string): 
       password: PASSWORD,
       companyPermissionTemplateId: collaborator,
     })
+    const superintendent = await createUser(tx, tenantId, {
+      organizationId: selfOrg,
+      email: `super-${label}@web.test`,
+      name: 'Sam Ruiz',
+      jobTitle: 'Superintendent',
+      password: PASSWORD,
+      companyPermissionTemplateId: employee,
+    })
     const trade = await createUser(tx, tenantId, {
       organizationId: trades,
       email: `foreman-${label}@web.test`,
@@ -152,6 +160,7 @@ export async function seedProject(pool: Pool, tenantId: string, label: string): 
 
     for (const [userId, template] of [
       [pm, 'Project Manager'],
+      [superintendent, 'Superintendent'],
       [architect, 'Design Team'],
       [trade, 'Trade Partner'],
     ] as const) {
@@ -168,6 +177,7 @@ export async function seedProject(pool: Pool, tenantId: string, label: string): 
       projectName,
       users: {
         pm: { id: pm, email: `pm-${label}@web.test` },
+        superintendent: { id: superintendent, email: `super-${label}@web.test` },
         architect: { id: architect, email: `aor-${label}@web.test` },
         trade: { id: trade, email: `foreman-${label}@web.test` },
       },

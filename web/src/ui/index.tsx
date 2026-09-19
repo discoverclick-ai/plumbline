@@ -132,7 +132,10 @@ export function Pill({ children, tone = 'neutral' }: { children: ReactNode; tone
 export function Banner({ children, tone = 'neutral' }: { children: ReactNode; tone?: Tone }) {
   return (
     <div
-      role={tone === 'danger' ? 'alert' : undefined}
+      // `alert` interrupts a screen reader, which is right for a problem and
+      // wrong for a note. Everything else announces politely rather than
+      // silently, because a banner nobody hears is a banner that is not there.
+      role={tone === 'danger' ? 'alert' : tone === 'neutral' ? undefined : 'status'}
       style={{
         padding: 'var(--space-3) var(--space-4)',
         borderRadius: 'var(--radius)',

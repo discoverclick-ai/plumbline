@@ -417,9 +417,12 @@ const ROUTES: Route[] = [
    * routes are thin even by the standard of the rest of this file: there is
    * no arithmetic to do on the way past, which is the point.
    */
-  route('GET', '/projects/:projectId/budget', async ({ actor, params, budget }) => ({
-    lines: await budget.summary(actor, params['projectId'] as string),
-  })),
+  // Returns `costsVisible` alongside the lines, because a reader without the
+  // cost privilege gets the same rows with the money nulled rather than a
+  // refusal, and the client has to know which it is looking at.
+  route('GET', '/projects/:projectId/budget', async ({ actor, params, budget }) =>
+    budget.summary(actor, params['projectId'] as string),
+  ),
 
   route('POST', '/projects/:projectId/budget/lines', async ({ actor, params, body, budget }) =>
     budget.addLine(actor, {
@@ -552,10 +555,11 @@ const ROUTES: Route[] = [
     '/projects/:projectId/erp-export',
     async ({ actor, params, budget, db, res }) => {
       const projectId = params['projectId'] as string
-      // Reuses the budget's own permission check rather than inventing a
-      // second one: if you cannot see the cost figures on screen you cannot
-      // download them either.
-      await budget.summary(actor, projectId)
+      // Explicitly, not by reading the summary: since the summary returns
+      // nulled money rather than refusing, a route that called it and then
+      // exported the real figures anyway would hand the whole budget to
+      // somebody who may not see a single number of it.
+      await budget.assertCostsVisible(actor, projectId)
 
       const batch = await withTenant(db as Db, actor.tenantId, (tx) => buildErpBatch(tx, actor.tenantId, projectId))
       const file = await new CsvErpAdapter().format(batch)

@@ -19,7 +19,8 @@ import { Banner, Card, Pill, Spinner, Table, Tabs } from '../ui/index.js'
  */
 
 /** Formats without parsing: group the integer part, keep the cents verbatim. */
-export function formatMoney(amount: string): string {
+export function formatMoney(amount: string | null): string {
+  if (amount === null) return '—'
   const negative = amount.startsWith('-')
   const [whole = '0', cents = '00'] = (negative ? amount.slice(1) : amount).split('.')
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
@@ -32,11 +33,27 @@ function overUnderTone(amount: string): 'danger' | 'warn' | 'neutral' {
   return Number(amount) === 0 ? 'warn' : 'neutral'
 }
 
+/**
+ * Trailing zeros go only AFTER a decimal point. An earlier version stripped
+ * them unconditionally, which turned the string "0" into the empty string and
+ * put a blank where a quantity of nothing belonged.
+ */
+export function trimZeros(value: string): string {
+  return value.includes('.') ? value.replace(/0+$/, '').replace(/\.$/, '') : value
+}
+
+function quantity(value: string | null, unit: string | null): string {
+  if (value === null) return '—'
+  const trimmed = trimZeros(value)
+  return unit ? `${trimmed} ${unit}` : trimmed
+}
+
 export function Budget({ projectId, projectName }: { projectId: string; projectName: string }) {
   const { api } = useSession()
   const [tab, setTab] = useState<'budget' | 'commitments'>('budget')
   const [lines, setLines] = useState<BudgetLineView[]>([])
-  const [commitments, setCommitments] = useState<CommitmentView[]>([])
+  const [costsVisible, setCostsVisible] = useState(true)
+  const [commitments, setCommitments] = useState<CommitmentView[] | null>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -44,11 +61,18 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
     let cancelled = false
     setLoading(true)
     setError(null)
-    Promise.all([api.budget(projectId), api.commitments(projectId).catch(() => ({ commitments: [] }))])
+    Promise.all([
+      api.budget(projectId),
+      // A refusal is not an empty list. "Nothing committed on this job yet"
+      // told to somebody who simply may not see the contracts is a lie, and
+      // on a job with four signed subcontracts it is an alarming one.
+      api.commitments(projectId).catch(() => ({ commitments: null })),
+    ])
       .then(([budget, committed]) => {
         if (cancelled) return
         setLines(budget.lines)
-        setCommitments(committed.commitments)
+        setCostsVisible(budget.costsVisible)
+        setCommitments(committed.commitments as CommitmentView[] | null)
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -66,7 +90,7 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
     }
   }, [api, projectId])
 
-  const overBudget = lines.filter((line) => line.projectedOverUnder.startsWith('-'))
+  const overBudget = lines.filter((line) => line.projectedOverUnder?.startsWith('-'))
 
   return (
     <ToolLandingPage
@@ -78,13 +102,21 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
           onSelect={(key) => setTab(key as 'budget' | 'commitments')}
           tabs={[
             { key: 'budget', label: 'Budget' },
-            { key: 'commitments', label: 'Commitments', badge: commitments.length },
+            ...(commitments === null ? [] : [{ key: 'commitments', label: 'Commitments', badge: commitments.length }]),
           ]}
         />
       }
       banner={
         error ? (
           <Banner tone="danger">{error}</Banner>
+        ) : !costsVisible ? (
+          // Said plainly rather than shown as an empty column. A screen full
+          // of dashes reads as a job with no numbers on it, which is a very
+          // different and more alarming thing than not being cleared to see
+          // them.
+          <Banner tone="accent">
+            You can see the scope and the quantities on this job. Cost figures are not part of your access.
+          </Banner>
         ) : overBudget.length > 0 ? (
           <Banner tone="danger">
             {overBudget.length} {overBudget.length === 1 ? 'line is' : 'lines are'} projected over budget.
@@ -95,7 +127,7 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
       <Card>
         {loading ? (
           <Spinner label="Loading the budget" />
-        ) : tab === 'budget' ? (
+        ) : tab === 'budget' || commitments === null ? (
           <Table
             rows={lines}
             rowKey={(row) => row.budgetLineId}
@@ -116,63 +148,95 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
                   </>
                 ),
               },
-              {
-                key: 'original',
-                header: 'Original',
-                width: '130px',
-                secondary: true,
-                render: (row) => <Money value={row.originalAmount} />,
-              },
-              {
-                key: 'revisions',
-                header: 'Revisions',
-                width: '130px',
-                secondary: true,
-                render: (row) =>
-                  Number(row.approvedRevisions) === 0 ? (
-                    <span style={{ color: 'var(--ink-faint)' }}>&mdash;</span>
-                  ) : (
-                    <Money value={row.approvedRevisions} />
-                  ),
-              },
-              {
-                key: 'current',
-                header: 'Current Budget',
-                width: '140px',
-                render: (row) => <Money value={row.currentBudget} strong />,
-              },
-              {
-                key: 'committed',
-                header: 'Committed',
-                width: '140px',
-                render: (row) => <Money value={row.committedCost} />,
-              },
-              {
-                key: 'actual',
-                header: 'Actual',
-                width: '130px',
-                secondary: true,
-                render: (row) => <Money value={row.actualCost} />,
-              },
-              {
-                key: 'projected',
-                header: 'Projected',
-                width: '140px',
-                render: (row) => <Money value={row.projectedCost} />,
-              },
-              {
-                key: 'variance',
-                header: 'Over / Under',
-                width: '150px',
-                render: (row) => (
-                  <Pill tone={overUnderTone(row.projectedOverUnder)}>{formatMoney(row.projectedOverUnder)}</Pill>
-                ),
-              },
+              ...(costsVisible
+                ? [
+                    {
+                      key: 'original',
+                      header: 'Original',
+                      width: '130px',
+                      secondary: true,
+                      render: (row: BudgetLineView) => <Money value={row.originalAmount} />,
+                    },
+                  ]
+                : [
+                    {
+                      key: 'quantity',
+                      header: 'Quantity',
+                      width: '150px',
+                      render: (row: BudgetLineView) =>
+                        // Most lines are a lump sum with no units on them at
+                        // all, and "0 of —" is worse than saying so.
+                        row.originalQuantity === null ? (
+                          <span style={{ display: 'block', textAlign: 'right', color: 'var(--ink-faint)' }}>
+                            not tracked by unit
+                          </span>
+                        ) : (
+                          <span style={{ display: 'block', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                            {quantity(row.quantityToDate, row.unitOfMeasure)}
+                            <span style={{ color: 'var(--ink-faint)' }}>
+                              {' of '}
+                              {quantity(row.originalQuantity, row.unitOfMeasure)}
+                            </span>
+                          </span>
+                        ),
+                    },
+                  ]),
+              ...(costsVisible
+                ? ([
+                    {
+                      key: 'revisions',
+                      header: 'Revisions',
+                      width: '130px',
+                      secondary: true,
+                      render: (row: BudgetLineView) =>
+                        Number(row.approvedRevisions ?? 0) === 0 ? (
+                          <span style={{ color: 'var(--ink-faint)' }}>&mdash;</span>
+                        ) : (
+                          <Money value={row.approvedRevisions} />
+                        ),
+                    },
+                    {
+                      key: 'current',
+                      header: 'Current Budget',
+                      width: '140px',
+                      render: (row: BudgetLineView) => <Money value={row.currentBudget} strong />,
+                    },
+                    {
+                      key: 'committed',
+                      header: 'Committed',
+                      width: '140px',
+                      render: (row: BudgetLineView) => <Money value={row.committedCost} />,
+                    },
+                    {
+                      key: 'actual',
+                      header: 'Actual',
+                      width: '130px',
+                      secondary: true,
+                      render: (row: BudgetLineView) => <Money value={row.actualCost} />,
+                    },
+                    {
+                      key: 'projected',
+                      header: 'Projected',
+                      width: '140px',
+                      render: (row: BudgetLineView) => <Money value={row.projectedCost} />,
+                    },
+                    {
+                      key: 'variance',
+                      header: 'Over / Under',
+                      width: '150px',
+                      render: (row: BudgetLineView) => (
+                        <Pill tone={overUnderTone(row.projectedOverUnder ?? '0')}>
+                          {formatMoney(row.projectedOverUnder)}
+                        </Pill>
+                      ),
+                    },
+                  ] as const)
+                : []),
             ]}
           />
         ) : (
           <Table
-            rows={commitments}
+            rows={commitments ?? []}
             rowKey={(row) => row.commitmentId}
             empty={
               <p style={{ margin: 0, color: 'var(--ink-muted)' }}>
@@ -245,7 +309,7 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
 }
 
 /** Tabular numerals, right aligned. Money in a proportional font is unreadable in a column. */
-function Money({ value, strong }: { value: string; strong?: boolean }) {
+function Money({ value, strong }: { value: string | null; strong?: boolean }) {
   return (
     <span
       style={{

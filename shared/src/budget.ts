@@ -19,19 +19,34 @@ import { loadAccess } from './repositories/permissions.js'
  * of this module is where that stops being negotiable.
  */
 
+/**
+ * Money is nullable here for one reason: plenty of people on a job may see the
+ * budget and may not see what it costs. A superintendent manages production,
+ * and putting the job's margin on a jobsite iPad is how it reaches a
+ * subcontractor. They get the units; the dollars come back null.
+ */
 export interface BudgetLineSummary {
   budgetLineId: string
   budgetCodeId: string
   budgetCode: string
   description: string
-  originalAmount: string
-  approvedRevisions: string
-  currentBudget: string
-  committedCost: string
-  actualCost: string
-  pendingCost: string
-  projectedCost: string
-  projectedOverUnder: string
+  unitOfMeasure: string | null
+  originalQuantity: string | null
+  quantityToDate: string
+  originalAmount: string | null
+  approvedRevisions: string | null
+  currentBudget: string | null
+  committedCost: string | null
+  actualCost: string | null
+  pendingCost: string | null
+  projectedCost: string | null
+  projectedOverUnder: string | null
+}
+
+export interface BudgetView {
+  /** False for somebody who may see the budget but not what it costs. */
+  costsVisible: boolean
+  lines: BudgetLineSummary[]
 }
 
 const MONEY = /^-?\d{1,16}(\.\d{1,2})?$/
@@ -44,15 +59,13 @@ function assertMoney(value: string, field: string): void {
   }
 }
 
-/** Reading cost figures is its own privilege: plenty of people on a job may see quantities and not dollars. */
-async function assertCanSeeCosts(tx: Db, actor: Actor, projectId: string): Promise<void> {
+/** Seeing the budget and seeing what it costs are two different permissions. */
+async function costVisibility(tx: Db, actor: Actor, projectId: string): Promise<boolean> {
   const access = await loadAccess(tx, { userId: actor.userId, tenantId: actor.tenantId, projectId })
   if (!hasLevel(access, 'budget', 'read_only')) {
     throw new PermissionDeniedError('You cannot see the budget on this project', { tool: 'budget' })
   }
-  if (!hasPrivilege(access, 'budget', 'view_costs') && !access.isCompanyAdmin) {
-    throw new PermissionDeniedError('You cannot see cost figures on this project', { tool: 'budget' })
-  }
+  return hasPrivilege(access, 'budget', 'view_costs') || access.isCompanyAdmin
 }
 
 async function assertCanManage(tx: Db, actor: Actor, projectId: string): Promise<void> {
@@ -190,12 +203,21 @@ export class BudgetService {
     })
   }
 
-  /** Every derived number, computed one way, for every screen and every agent. */
-  async summary(actor: Actor, projectId: string): Promise<BudgetLineSummary[]> {
+  /**
+   * Every derived number, computed one way, for every screen and every agent.
+   *
+   * A reader without `view_costs` gets the same rows with every money field
+   * null, rather than an error. An error there would mean a Budget tab that
+   * opens onto a refusal, and a tab that cannot be opened is worse than no
+   * tab; nulls mean a superintendent sees the scopes and the quantities,
+   * which are the numbers they actually act on.
+   */
+  async summary(actor: Actor, projectId: string): Promise<BudgetView> {
     return withTenant(this.db, actor.tenantId, async (tx) => {
-      await assertCanSeeCosts(tx, actor, projectId)
-      const { rows } = await tx.query<Record<string, string>>(
+      const costsVisible = await costVisibility(tx, actor, projectId)
+      const { rows } = await tx.query<Record<string, string | null>>(
         `SELECT budget_line_id, budget_code_id, budget_code, description,
+                unit_of_measure, original_quantity, quantity_to_date,
                 original_amount, approved_revisions, current_budget,
                 committed_cost, actual_cost, pending_cost, projected_cost, projected_over_under
            FROM budget_summary
@@ -203,20 +225,40 @@ export class BudgetService {
           ORDER BY budget_code`,
         [actor.tenantId, projectId],
       )
-      return rows.map((r) => ({
-        budgetLineId: r['budget_line_id'] as string,
-        budgetCodeId: r['budget_code_id'] as string,
-        budgetCode: r['budget_code'] as string,
-        description: r['description'] as string,
-        originalAmount: r['original_amount'] as string,
-        approvedRevisions: r['approved_revisions'] as string,
-        currentBudget: r['current_budget'] as string,
-        committedCost: r['committed_cost'] as string,
-        actualCost: r['actual_cost'] as string,
-        pendingCost: r['pending_cost'] as string,
-        projectedCost: r['projected_cost'] as string,
-        projectedOverUnder: r['projected_over_under'] as string,
-      }))
+      const money = (value: string | null | undefined): string | null => (costsVisible ? (value ?? null) : null)
+      return {
+        costsVisible,
+        lines: rows.map((r) => ({
+          budgetLineId: r['budget_line_id'] as string,
+          budgetCodeId: r['budget_code_id'] as string,
+          budgetCode: r['budget_code'] as string,
+          description: r['description'] as string,
+          unitOfMeasure: r['unit_of_measure'] ?? null,
+          originalQuantity: r['original_quantity'] ?? null,
+          quantityToDate: (r['quantity_to_date'] ?? '0') as string,
+          originalAmount: money(r['original_amount']),
+          approvedRevisions: money(r['approved_revisions']),
+          currentBudget: money(r['current_budget']),
+          committedCost: money(r['committed_cost']),
+          actualCost: money(r['actual_cost']),
+          pendingCost: money(r['pending_cost']),
+          projectedCost: money(r['projected_cost']),
+          projectedOverUnder: money(r['projected_over_under']),
+        })),
+      }
+    })
+  }
+
+  /**
+   * For callers that hand over the actual figures, such as the accounting
+   * export. Separate from `summary` on purpose: a route that read the summary
+   * and then exported costs regardless of what came back would leak them.
+   */
+  async assertCostsVisible(actor: Actor, projectId: string): Promise<void> {
+    await withTenant(this.db, actor.tenantId, async (tx) => {
+      if (!(await costVisibility(tx, actor, projectId))) {
+        throw new PermissionDeniedError('You cannot see cost figures on this project', { tool: 'budget' })
+      }
     })
   }
 }

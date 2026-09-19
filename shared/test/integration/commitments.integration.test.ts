@@ -96,7 +96,7 @@ afterAll(async () => {
 })
 
 const committedFor = async (code: string) =>
-  (await budget.summary(pm, projectId)).find((l) => l.budgetCode === code)?.committedCost
+  (await budget.summary(pm, projectId)).lines.find((l) => l.budgetCode === code)?.committedCost
 
 async function subcontract(number: string, amount: string) {
   return commitments.create(pm, {
