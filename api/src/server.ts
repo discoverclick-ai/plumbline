@@ -475,23 +475,20 @@ const ROUTES: Route[] = [
   // created from any client: the money subsystem was unreachable for setup
   // while being fully built underneath.
 
-  // Every one of these runs inside `withTenant`. The WBS functions filter by
-  // tenant_id explicitly, which looks like enough and is not: the
-  // application connects as `plumbline_app`, row-level security is FORCED on
-  // these tables, and a query issued with no tenant context returns zero
-  // rows rather than failing. The symptom is a cost code picker that is
-  // simply empty, on a screen where empty looks like "nothing defined yet".
+  // These functions set their own tenant context now, so a route cannot
+  // forget it. The first version of these three did, and the symptom was not
+  // an error: FORCED row-level security on a confined connection with no
+  // tenant set returns ZERO ROWS, which showed up as an empty cost code
+  // picker on a screen where empty reads as "nothing defined yet".
   route('GET', '/wbs/segments', async ({ actor, db }) => ({
-    segments: await withTenant(db, actor.tenantId, (tx) => listSegments(tx, actor.tenantId)),
+    segments: await listSegments(db, actor.tenantId),
   })),
 
   route('GET', '/projects/:projectId/wbs/:segmentKey', async ({ actor, params, db }) => ({
-    values: await withTenant(db, actor.tenantId, (tx) =>
-      listSegmentValues(tx, actor.tenantId, {
-        segmentKey: params['segmentKey'] as string,
-        projectId: params['projectId'] as string,
-      }),
-    ),
+    values: await listSegmentValues(db, actor.tenantId, {
+      segmentKey: params['segmentKey'] as string,
+      projectId: params['projectId'] as string,
+    }),
   })),
 
   route('POST', '/projects/:projectId/wbs/:segmentKey', async ({ actor, params, body, db, budget }) => {
@@ -510,9 +507,7 @@ const ROUTES: Route[] = [
   }),
 
   route('GET', '/projects/:projectId/budget-codes', async ({ actor, params, db }) => ({
-    codes: await withTenant(db, actor.tenantId, (tx) =>
-      listBudgetCodes(tx, actor.tenantId, params['projectId'] as string),
-    ),
+    codes: await listBudgetCodes(db, actor.tenantId, params['projectId'] as string),
   })),
 
   route('POST', '/projects/:projectId/budget-codes', async ({ actor, params, body, db, budget }) => {

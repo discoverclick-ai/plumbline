@@ -137,6 +137,11 @@ export async function installDefaultWbs(db: Db, tenantId: string): Promise<void>
   }
 }
 
+/**
+ * Deliberately NOT wrapped: every caller in this file is already inside a
+ * transaction with the tenant set, and wrapping would open a savepoint per
+ * segment lookup in a loop that runs once per value.
+ */
 export async function findSegment(db: Db, tenantId: string, key: string): Promise<Segment> {
   const { rows } = await db.query<{
     id: string
@@ -155,13 +160,26 @@ export async function findSegment(db: Db, tenantId: string, key: string): Promis
   return row
 }
 
+/**
+ * Wrapped in `withTenant`, like every reader in this file.
+ *
+ * Filtering on tenant_id looks like enough and is not: these tables have
+ * FORCED row-level security and the application connects as a confined role,
+ * so a query issued with no tenant context returns zero rows rather than
+ * failing. A caller who forgets gets an empty cost code picker on a screen
+ * where empty reads as "nothing defined yet", with no error anywhere.
+ * `withTenant` nests through a savepoint, so wrapping here is free when the
+ * caller already did it.
+ */
 export async function listSegments(db: Db, tenantId: string): Promise<Segment[]> {
-  const { rows } = await db.query<Segment>(
-    `SELECT id, key, label, position, builtin, required FROM wbs_segments
-      WHERE tenant_id = $1 ORDER BY position`,
-    [tenantId],
-  )
-  return rows
+  return withTenant(db, tenantId, async (tx) => {
+    const { rows } = await tx.query<Segment>(
+      `SELECT id, key, label, position, builtin, required FROM wbs_segments
+        WHERE tenant_id = $1 ORDER BY position`,
+      [tenantId],
+    )
+    return rows
+  })
 }
 
 /**
@@ -207,27 +225,29 @@ export async function listSegmentValues(
   tenantId: string,
   input: { segmentKey: string; projectId?: string },
 ): Promise<SegmentValue[]> {
-  const segment = await findSegment(db, tenantId, input.segmentKey)
-  const { rows } = await db.query<{
-    id: string
-    segment_id: string
-    code: string
-    label: string
-    project_id: string | null
-  }>(
-    `SELECT id, segment_id, code, label, project_id FROM wbs_segment_values
-      WHERE tenant_id = $1 AND segment_id = $2 AND active
-        AND (project_id IS NULL OR project_id = $3)
-      ORDER BY sort_order, code`,
-    [tenantId, segment.id, input.projectId ?? null],
-  )
-  return rows.map((r) => ({
-    id: r.id,
-    segmentId: r.segment_id,
-    code: r.code,
-    label: r.label,
-    projectId: r.project_id,
-  }))
+  return withTenant(db, tenantId, async (tx) => {
+    const segment = await findSegment(tx, tenantId, input.segmentKey)
+    const { rows } = await tx.query<{
+      id: string
+      segment_id: string
+      code: string
+      label: string
+      project_id: string | null
+    }>(
+      `SELECT id, segment_id, code, label, project_id FROM wbs_segment_values
+        WHERE tenant_id = $1 AND segment_id = $2 AND active
+          AND (project_id IS NULL OR project_id = $3)
+        ORDER BY sort_order, code`,
+      [tenantId, segment.id, input.projectId ?? null],
+    )
+    return rows.map((r) => ({
+      id: r.id,
+      segmentId: r.segment_id,
+      code: r.code,
+      label: r.label,
+      projectId: r.project_id,
+    }))
+  })
 }
 
 /**
@@ -300,6 +320,10 @@ export async function createBudgetCode(
 }
 
 export async function listBudgetCodes(db: Db, tenantId: string, projectId: string): Promise<BudgetCode[]> {
+  return withTenant(db, tenantId, (tx) => listBudgetCodesIn(tx, tenantId, projectId))
+}
+
+async function listBudgetCodesIn(db: Db, tenantId: string, projectId: string): Promise<BudgetCode[]> {
   const { rows } = await db.query<{
     id: string
     project_id: string
