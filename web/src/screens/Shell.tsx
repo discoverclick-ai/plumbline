@@ -11,6 +11,7 @@ import { Lookahead } from './Lookahead.tsx'
 import { Chasing } from './Chasing.tsx'
 import { Drawings } from './Drawings.tsx'
 import { Photos } from './Photos.tsx'
+import { ProjectTeam } from './ProjectTeam.tsx'
 import { SubmittalRegister } from './SubmittalRegister.tsx'
 import { SyncConflicts } from './SyncConflicts.tsx'
 import { CaptureInbox } from './CaptureInbox.tsx'
@@ -208,6 +209,7 @@ type ProjectTab =
     | 'contracts'
     | 'chasing'
     | 'field'
+    | 'team'
     | 'inbox'
 
 export function ProjectShell({ project, onLeave }: { project: ProjectView; onLeave: () => void }) {
@@ -247,6 +249,7 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
     tabs.push({ key: 'chasing', label: 'Chasing' })
   }
   if (atLeast(level('capture'), 'read_only')) tabs.push({ key: 'inbox', label: 'Capture inbox' })
+  if (atLeast(level('project_team'), 'read_only')) tabs.push({ key: 'team', label: 'Team' })
   // Same audience as chasing: this is the office's screen, about what the
   // field typed and the server could not keep.
   if (atLeast(level('project_team'), 'read_only') && atLeast(level('rfis'), 'standard')) {
@@ -305,6 +308,7 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
           {tab === 'photos' && <Photos projectId={project.id} projectName={project.name} />}
           {tab === 'chasing' && <Chasing projectId={project.id} projectName={project.name} />}
           {tab === 'field' && <SyncConflicts projectId={project.id} projectName={project.name} />}
+          {tab === 'team' && <ProjectTeam projectId={project.id} projectName={project.name} />}
           {tab === 'budget' && <Budget projectId={project.id} projectName={project.name} />}
           {tab === 'contracts' && <Contracts projectId={project.id} projectName={project.name} />}
           {tab === 'inbox' && <CaptureInbox projectId={project.id} projectName={project.name} />}
