@@ -4,6 +4,7 @@ import {
   AttachmentService,
   authenticate,
   DrawingService,
+  SyncService,
   BudgetService,
   buildErpBatch,
   CommitmentService,
@@ -64,6 +65,7 @@ interface RequestContext {
   attachments: AttachmentService
   budget: BudgetService
   drawings: DrawingService
+  sync: SyncService
   commitments: CommitmentService
   invoicing: InvoicingService
   db: Pool
@@ -661,6 +663,36 @@ const ROUTES: Route[] = [
     { binary: true },
   ),
 
+  /**
+   * Offline.
+   *
+   * Three calls and no more: claim a device, pull what you will need, push
+   * what you did. Everything else about being offline is the client's problem,
+   * which is the right place for it.
+   */
+  route('POST', '/sync/devices', async ({ actor, body, sync }) =>
+    sync.registerDevice(actor, String(body['deviceKey'] ?? ''), body['label'] as string | undefined),
+  ),
+
+  route('GET', '/sync/pull', async ({ actor, query, sync }) =>
+    sync.pull(actor, {
+      deviceId: query.get('deviceId') ?? '',
+      projectId: query.get('projectId') ?? '',
+    }),
+  ),
+
+  route('POST', '/sync/push', async ({ actor, body, sync }) => ({
+    results: await sync.push(
+      actor,
+      String(body['deviceId'] ?? ''),
+      (body['operations'] ?? []) as Parameters<SyncService['push']>[2],
+    ),
+  })),
+
+  route('GET', '/projects/:projectId/sync-conflicts', async ({ actor, params, sync }) => ({
+    conflicts: await sync.conflicts(actor, params['projectId'] as string),
+  })),
+
   route('GET', '/ball-in-court', async ({ kernel, actor, query }) => {
     const entries = await kernel.ballInCourt(actor, {
       ...(query.get('projectId') ? { projectId: query.get('projectId') as string } : {}),
@@ -731,6 +763,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
   // Stateless over the pool, so unlike capture there is nothing to construct
   // lazily and no credential to resolve.
   const budgetService = new BudgetService(pool as Db)
+  const syncService = new SyncService(pool as Db)
   const commitmentService = new CommitmentService(pool as Db)
   const invoicingService = new InvoicingService(pool as Db)
 
@@ -802,6 +835,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           attachments: attachments(),
           budget: budgetService,
           drawings: drawingService(),
+          sync: syncService,
           commitments: commitmentService,
           invoicing: invoicingService,
           db: pool,

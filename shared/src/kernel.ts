@@ -168,7 +168,13 @@ export class RecordKernel {
         recordId: record.id,
         typeKey: type.key,
         event: 'record.created',
-        payload: { designation: record.designation, status: record.status, title: record.title },
+        payload: {
+          designation: record.designation,
+          status: record.status,
+          title: record.title,
+          version: record.version,
+          body: record.body,
+        },
         actorUserId: actor.userId,
       })
 
@@ -405,7 +411,17 @@ export class RecordKernel {
         recordId,
         typeKey: type.key,
         event: 'record.updated',
-        payload: { fields: Object.keys(input.body ?? {}), titleChanged: input.title !== undefined },
+        // The body AFTER the change, with the version it produced. Offline
+        // sync reconstructs the base a device was working from by finding the
+        // event that carries that version, and without it a three-way merge
+        // has no third side: it degrades to whatever the device sent winning
+        // silently, which is the exact failure the merge exists to prevent.
+        payload: {
+          fields: Object.keys(input.body ?? {}),
+          titleChanged: input.title !== undefined,
+          version: updated.version,
+          body: updated.body,
+        },
         actorUserId: actor.userId,
       })
 
@@ -500,6 +516,8 @@ export class RecordKernel {
           to: plan.toStatus,
           ballInCourt: plan.ballInCourtUserId,
           designation: record.designation,
+          version: updated.version,
+          body: updated.body,
         },
         actorUserId: actor.userId,
       })
