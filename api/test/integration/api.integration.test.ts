@@ -744,3 +744,38 @@ describe('booting without a model key', () => {
     }
   })
 })
+
+describe('bringing a job across', () => {
+  it('imports a Procore RFI export over the wire, and says what it invented', async () => {
+    // The importer existed, was tested, and could not be called from any
+    // client in the product. A backend nothing can reach is a promise.
+    const csv = [
+      'RFI #,Subject,Question,Status,Discipline,Ball In Court,Assignee Email,Responsible Company',
+      '1,Anchor bolt embedment,"Nine inch on S-401, seven on the shops. Which governs?",Open,Structural,"Nash, Robin",robin@nash-arch.test,Nash Architects',
+      '2,,,Open,,,,',
+    ].join('\n')
+
+    const response = await fetch(`${baseUrl}/projects/${projectId}/imports/procore/rfis`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/csv', authorization: `Bearer ${pmToken}` },
+      body: csv,
+    })
+    expect(response.status).toBe(200)
+
+    const result = (await response.json()) as {
+      created: number
+      skipped: { row: number; reason: string }[]
+      createdOrganizations: string[]
+      createdUsers: string[]
+    }
+
+    expect(result.created).toBe(1)
+    // The empty row is named, not silently dropped. A migration that loses
+    // rows quietly is one the customer abandons back to where they came from.
+    expect(result.skipped).toHaveLength(1)
+    // And every company and person it conjured is listed, because an import
+    // that silently invents an organization is one nobody can audit later.
+    expect(result.createdOrganizations).toContain('Nash Architects')
+    expect(result.createdUsers).toContain('robin@nash-arch.test')
+  })
+})

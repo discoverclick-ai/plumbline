@@ -14,7 +14,9 @@ import {
   McpToolRunner,
   NoticeDraftService,
   ObligationService,
+  parseCsv,
   PhotoService,
+  ProcoreImporter,
   renderClaimFile,
   ScheduleService,
   SpecificationService,
@@ -93,6 +95,7 @@ interface RequestContext {
   drafter: NoticeDraftService
   photos: PhotoService
   specs: SpecificationService
+  procore: ProcoreImporter
   schedule: ScheduleService
   mcp: McpToolRunner
   commitments: CommitmentService
@@ -747,6 +750,38 @@ const ROUTES: Route[] = [
     }),
   })),
 
+  /**
+   * Bringing a job across from Procore.
+   *
+   * The thing that decides whether anybody can leave the incumbent, and it
+   * had no route either: the importer was written and tested and could not be
+   * called from any client in the product.
+   *
+   * The CSV is posted as text rather than multipart, because a Procore export
+   * is a file somebody downloaded and this is a paste box as much as an
+   * upload. The result names every row it skipped and every company and
+   * person it invented, because an import that silently conjures an
+   * organization is one nobody can audit afterwards.
+   */
+  route(
+    'POST',
+    '/projects/:projectId/imports/procore/rfis',
+    async ({ actor, params, req, procore }) => {
+      const chunks: Buffer[] = []
+      let size = 0
+      for await (const chunk of req) {
+        size += (chunk as Buffer).length
+        if (size > MAX_UPLOAD_BYTES) {
+          throw new KernelError('payload_too_large', 'That export is too large', 413)
+        }
+        chunks.push(chunk as Buffer)
+      }
+      const rows = parseCsv(Buffer.concat(chunks).toString('utf8'))
+      return procore.importRfis(actor, { projectId: params['projectId'] as string, rows })
+    },
+    { binary: true },
+  ),
+
   // ---------------------------------------------------------------------
   // Specifications, and the submittal register hiding in them
   // ---------------------------------------------------------------------
@@ -1243,6 +1278,8 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
     },
   })
 
+  const procoreImporter = new ProcoreImporter(pool as Db)
+
   let photoService: PhotoService | null = null
   const photos = (): PhotoService => {
     photoService ??= new PhotoService(pool as Db, blobStore())
@@ -1314,6 +1351,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           drafter: draftService,
           photos: photos(),
           specs: specService,
+          procore: procoreImporter,
           mcp: mcpRunner,
           commitments: commitmentService,
           invoicing: invoicingService,

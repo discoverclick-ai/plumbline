@@ -154,6 +154,57 @@ function sourceFiles(dir: string): string[] {
   return out
 }
 
+/**
+ * A second rule, from the same afternoon.
+ *
+ * Two subsystems in this product were built, tested, committed and left with
+ * no way for any client to call them: the submittal register and the Procore
+ * importer. Both had a service, both had integration tests, and neither had a
+ * single route. A backend nothing can reach is a promise, and passing tests
+ * on it are a promise with a green tick.
+ *
+ * So the check is mechanical: every service class the shared package exports
+ * is either reachable from the API or listed here as deliberately not. The
+ * exemptions are the worker's, which run on a schedule and must NOT be
+ * exposed over HTTP.
+ */
+const WORKER_ONLY = new Set([
+  // Cursor-driven passes over the whole event log, across every tenant. A
+  // route for one of these would let any project member do another tenant's
+  // processing.
+  'FinancialPostingService',
+  'NotificationService',
+])
+
+describe('every service can be called by something', () => {
+  it('finds no subsystem stranded without a route', () => {
+    const shared = sourceFiles(join(HERE, '..', 'src'))
+      .map((file) => readFileSync(file, 'utf8'))
+      .join('\n')
+    const server = readFileSync(join(HERE, '..', '..', 'api', 'src', 'server.ts'), 'utf8')
+
+    const services = [
+      ...new Set(
+        [...shared.matchAll(/^export class (\w+(?:Service|Engine|Importer|Runner))\b/gm)].map((m) => m[1] as string),
+      ),
+    ]
+    expect(services.length).toBeGreaterThan(10)
+
+    // Word-boundary, not `includes`. A first version used `includes` and did
+    // not fire when the reference was renamed to `ProcoreImporterXX`: a lint
+    // rule that quietly passes is worse than no lint rule, which is the same
+    // lesson the tenant-filter rule below learned the hard way.
+    const stranded = services.filter(
+      (name) => !WORKER_ONLY.has(name) && !new RegExp(`\\b${name}\\b`).test(server),
+    )
+
+    expect(
+      stranded,
+      `\n${stranded.join(', ')}\n\nEither wire it to a route, or add it to WORKER_ONLY with a reason.\n`,
+    ).toEqual([])
+  })
+})
+
 describe('a function handed a tenant id uses it', () => {
   it('finds nothing leaning on row-level security alone', () => {
     const offences = ROOTS.flatMap(sourceFiles).flatMap((file) =>
