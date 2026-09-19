@@ -4,7 +4,9 @@ import {
   AttachmentService,
   authenticate,
   BudgetService,
+  buildErpBatch,
   CommitmentService,
+  CsvErpAdapter,
   InvoicingService,
   CaptureService,
   FilesystemBlobStore,
@@ -536,6 +538,37 @@ const ROUTES: Route[] = [
     await invoicing.releaseRetainage(actor, params['invoiceLineId'] as string, String(body['amount'] ?? ''))
     return { ok: true }
   }),
+
+  /**
+   * The accounting export.
+   *
+   * Binary because it hands back a file, and deliberately a download rather
+   * than a push: the general ledger is the system of record for the business,
+   * not for the job, and a platform that writes into it directly is one a
+   * controller turns off.
+   */
+  route(
+    'GET',
+    '/projects/:projectId/erp-export',
+    async ({ actor, params, budget, db, res }) => {
+      const projectId = params['projectId'] as string
+      // Reuses the budget's own permission check rather than inventing a
+      // second one: if you cannot see the cost figures on screen you cannot
+      // download them either.
+      await budget.summary(actor, projectId)
+
+      const batch = await withTenant(db as Db, actor.tenantId, (tx) => buildErpBatch(tx, actor.tenantId, projectId))
+      const file = await new CsvErpAdapter().format(batch)
+      res.writeHead(200, {
+        'content-type': file.contentType,
+        'content-length': Buffer.byteLength(file.body),
+        'content-disposition': `attachment; filename="${file.filename}"`,
+      })
+      res.end(file.body)
+      return undefined
+    },
+    { binary: true },
+  ),
 
   route('GET', '/ball-in-court', async ({ kernel, actor, query }) => {
     const entries = await kernel.ballInCourt(actor, {

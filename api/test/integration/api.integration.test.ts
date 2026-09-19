@@ -481,3 +481,18 @@ describe('attachments, over HTTP', () => {
     expect(download.bytes.equals(pdf)).toBe(true)
   })
 })
+
+describe('the accounting export', () => {
+  it('hands back a CSV as a download, for the person who cannot see it to be refused', async () => {
+    const download = await raw('GET', `/projects/${projectId}/erp-export`, { token: pmToken })
+    expect(download.status).toBe(200)
+    expect(download.headers['content-type']).toBe('text/csv')
+    expect(download.headers['content-disposition']).toContain('attachment;')
+    expect(download.bytes.toString('utf8')).toContain('cost_code,cost_type')
+
+    // Same permission as looking at the budget on screen. A download route
+    // with its own check is a second place for that decision to drift.
+    const refused = await raw('GET', `/projects/${projectId}/erp-export`, { token: tradeToken })
+    expect(refused.status).toBe(403)
+  })
+})
