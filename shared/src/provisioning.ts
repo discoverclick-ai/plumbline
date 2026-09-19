@@ -90,6 +90,16 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'drawings', level: 'standard', privileges: ['upload', 'publish', 'pin'] },
       { toolKey: 'specifications', level: 'standard', privileges: ['upload', 'review'] },
       { toolKey: 'capture', level: 'standard', privileges: ['review'] },
+      // The GC's PM is the one who profiles the contract and decides which
+      // extracted obligations are real. `view_terms` is what extends reading
+      // past the instruments their own company signed, and it is why this
+      // template and the company admin are the only two that carry it.
+      {
+        toolKey: 'contracts',
+        level: 'standard',
+        privileges: ['upload', 'segment', 'view_terms', 'accept_obligation', 'toll_clock', 'manage_calendar'],
+      },
+      { toolKey: 'notices', level: 'standard', privileges: ['create', 'issue', 'stand_down'] },
       { toolKey: 'documents', level: 'standard' },
       { toolKey: 'project_team', level: 'standard', privileges: ['manage_members'] },
     ],
@@ -122,6 +132,10 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'drawings', level: 'read_only', privileges: ['pin'] },
       { toolKey: 'specifications', level: 'read_only' },
       { toolKey: 'capture', level: 'read_only' },
+      // A party to the prime, so they read it, and they serve notices under
+      // it. They do not profile the contractor's subcontracts.
+      { toolKey: 'contracts', level: 'read_only' },
+      { toolKey: 'notices', level: 'standard', privileges: ['create', 'issue'] },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
     ],
@@ -152,6 +166,14 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'drawings', level: 'read_only', privileges: ['pin'] },
       { toolKey: 'specifications', level: 'read_only' },
       { toolKey: 'capture', level: 'standard', privileges: ['review'] },
+      // read_only WITHOUT view_terms: the sub reads the subcontract they
+      // signed, because they are its counterparty, and sees no other
+      // instrument on the job. A sub who can see a change order exists
+      // between the GC and the owner can infer the markup on their own work.
+      { toolKey: 'contracts', level: 'read_only' },
+      // Serving notice up the chain is most of what protects a sub's claim,
+      // and a sub who cannot do it in this system will do it in email.
+      { toolKey: 'notices', level: 'standard', privileges: ['create', 'issue'] },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
     ],
@@ -181,6 +203,11 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'drawings', level: 'read_only', privileges: ['pin'] },
       { toolKey: 'specifications', level: 'read_only' },
       { toolKey: 'capture', level: 'standard', privileges: ['review'] },
+      // A notice is often the super's to write, because the super is the one
+      // who watched the condition happen. Reading the prime's indemnity
+      // language is not part of that, so the clock carries its clause number
+      // and the text stays behind `contracts`.
+      { toolKey: 'notices', level: 'standard', privileges: ['create'] },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
     ],
@@ -215,6 +242,8 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'drawings', level: 'read_only', privileges: ['pin'] },
       { toolKey: 'specifications', level: 'read_only' },
       { toolKey: 'capture', level: 'read_only' },
+      { toolKey: 'contracts', level: 'read_only' },
+      { toolKey: 'notices', level: 'standard', privileges: ['create', 'issue'] },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
     ],
