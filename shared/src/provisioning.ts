@@ -67,6 +67,11 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'observations', level: 'standard', privileges: ['create', 'close'] },
       { toolKey: 'daily_log', level: 'standard', privileges: ['create'] },
       { toolKey: 't_and_m', level: 'standard', privileges: ['sign'] },
+      {
+        toolKey: 'change_management',
+        level: 'standard',
+        privileges: ['create', 'price', 'submit_to_owner', 'execute'],
+      },
       { toolKey: 'capture', level: 'standard', privileges: ['review'] },
       { toolKey: 'documents', level: 'standard' },
       { toolKey: 'project_team', level: 'standard', privileges: ['manage_members'] },
@@ -86,6 +91,9 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'observations', level: 'standard', privileges: ['create'] },
       { toolKey: 'daily_log', level: 'read_only' },
       { toolKey: 't_and_m', level: 'read_only' },
+      // Read-only on the whole job except this. Approving changes is the
+      // reason an owner has a login at all.
+      { toolKey: 'change_management', level: 'standard', privileges: ['approve'] },
       { toolKey: 'capture', level: 'read_only' },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
@@ -105,6 +113,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'observations', level: 'read_only' },
       { toolKey: 'daily_log', level: 'none' },
       { toolKey: 't_and_m', level: 'standard', privileges: ['create'] },
+      { toolKey: 'change_management', level: 'read_only', privileges: ['price'] },
       { toolKey: 'capture', level: 'standard', privileges: ['review'] },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
@@ -122,6 +131,8 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'daily_log', level: 'standard', privileges: ['create'] },
       // The super watched the work happen, so the super signs the ticket.
       { toolKey: 't_and_m', level: 'standard', privileges: ['sign'] },
+      // Most change events start with the super noticing something on a walk.
+      { toolKey: 'change_management', level: 'standard', privileges: ['create'] },
       { toolKey: 'capture', level: 'standard', privileges: ['review'] },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
@@ -145,6 +156,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'observations', level: 'read_only' },
       { toolKey: 'daily_log', level: 'none' },
       { toolKey: 't_and_m', level: 'standard', privileges: ['create'] },
+      { toolKey: 'change_management', level: 'read_only', privileges: ['price'] },
       { toolKey: 'capture', level: 'read_only' },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
@@ -161,6 +173,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'punch_list', level: 'read_only' },
       { toolKey: 'observations', level: 'read_only', privileges: ['create'] },
       { toolKey: 'capture', level: 'read_only' },
+      { toolKey: 'change_management', level: 'read_only' },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
     ],
@@ -181,6 +194,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'observations', level: 'read_only' },
       { toolKey: 'daily_log', level: 'read_only' },
       { toolKey: 't_and_m', level: 'read_only' },
+      { toolKey: 'change_management', level: 'read_only' },
       { toolKey: 'capture', level: 'read_only' },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
