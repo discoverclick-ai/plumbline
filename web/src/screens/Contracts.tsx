@@ -372,7 +372,7 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
               {
                 key: 'why',
                 header: '',
-                width: '110px',
+                width: '200px',
                 render: (row) => (
                   <Button variant="ghost" onClick={() => setExpanded(expanded === row.id ? null : row.id)}>
                     {expanded === row.id ? 'Hide' : 'Show work'}

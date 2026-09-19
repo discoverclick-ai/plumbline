@@ -452,6 +452,30 @@ export class ApiClient {
     return this.request('GET', `/projects/${projectId}/clocks`)
   }
 
+  claimFile(clockId: string): Promise<Record<string, unknown>> {
+    return this.request('GET', `/clocks/${clockId}/claim-file`)
+  }
+
+  /**
+   * The file as a document, fetched rather than linked.
+   *
+   * The token lives in memory, not in a cookie, so pointing an anchor at the
+   * download URL would produce a 401 and a blank tab. The bytes come back
+   * through the same authenticated request as everything else and the caller
+   * hands them to the browser.
+   */
+  async claimFileMarkdown(clockId: string): Promise<{ text: string; filename: string }> {
+    const response = await fetch(`${this.baseUrl}/clocks/${clockId}/claim-file.md`, {
+      headers: { ...(this.token ? { authorization: `Bearer ${this.token}` } : {}) },
+    })
+    if (!response.ok) {
+      throw new ApiError(response.status, 'claim_file_failed', 'The claim file could not be assembled')
+    }
+    const disposition = response.headers.get('content-disposition') ?? ''
+    const named = /filename="([^"]+)"/.exec(disposition)
+    return { text: await response.text(), filename: named?.[1] ?? `claim-${clockId}.md` }
+  }
+
   sweepClocks(projectId: string): Promise<unknown> {
     return this.request('POST', `/projects/${projectId}/clocks/sweep`)
   }

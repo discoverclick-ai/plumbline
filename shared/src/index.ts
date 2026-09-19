@@ -1,6 +1,7 @@
 export * from './auth.js'
 export * from './db.js'
 export * from './contracts/calendar.js'
+export * from './contracts/claim-file.js'
 export * from './contracts/clock-engine.js'
 export * from './contracts/documents.js'
 export * from './contracts/extraction.js'

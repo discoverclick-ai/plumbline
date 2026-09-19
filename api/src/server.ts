@@ -5,11 +5,13 @@ import {
   AttachmentService,
   authenticate,
   DrawingService,
+  ClaimFileService,
   ClockEngine,
   ContractService,
   EscalationService,
   McpToolRunner,
   ObligationService,
+  renderClaimFile,
   ScheduleService,
   type ObligationExtractionProvider,
   TOOLS,
@@ -79,6 +81,7 @@ interface RequestContext {
   contracts: ContractService
   obligations: ObligationService
   clocks: ClockEngine
+  claims: ClaimFileService
   schedule: ScheduleService
   mcp: McpToolRunner
   commitments: CommitmentService
@@ -896,6 +899,31 @@ const ROUTES: Route[] = [
    * without waiting for the next tick, and because a deadline subsystem
    * nobody can force to run is one nobody will trust.
    */
+  /**
+   * The claim file.
+   *
+   * A query, never a stored document. Every piece of it was recorded as a
+   * side effect of doing the work, so it exists continuously rather than
+   * being reconstructed by a project engineer under deposition pressure.
+   */
+  route('GET', '/clocks/:clockId/claim-file', async ({ actor, params, claims }) =>
+    claims.assemble(actor, params['clockId'] as string),
+  ),
+
+  route('GET', '/clocks/:clockId/claim-file.md', async ({ actor, params, claims, res }) => {
+    const file = await claims.assemble(actor, params['clockId'] as string)
+    const body = Buffer.from(renderClaimFile(file), 'utf8')
+    res.writeHead(200, {
+      'content-type': 'text/markdown; charset=utf-8',
+      'content-length': body.byteLength,
+      // Named for the job and the deadline, because these end up in a folder
+      // with forty others and "claim-file.md" helps nobody.
+      'content-disposition': `attachment; filename="claim-${file.project.number}-${(file.clock?.dueAt ?? '').slice(0, 10)}.md"`,
+    })
+    res.end(body)
+    return null
+  }),
+
   route('POST', '/projects/:projectId/clocks/sweep', async ({ actor, params, clocks }) =>
     // Scoped, and deliberately not advancing the global cursor: one tenant
     // pressing a button must not consume another tenant's backlog. The unique
@@ -1003,6 +1031,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
   })
   const clockEngine = new ClockEngine(pool as Db)
   const scheduleService = new ScheduleService(pool as Db)
+  const claimFileService = new ClaimFileService(pool as Db)
   const mcpRunner = new McpToolRunner(pool as Db)
   const commitmentService = new CommitmentService(pool as Db)
   const invoicingService = new InvoicingService(pool as Db)
@@ -1081,6 +1110,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           obligations: obligationService,
           clocks: clockEngine,
           schedule: scheduleService,
+          claims: claimFileService,
           mcp: mcpRunner,
           commitments: commitmentService,
           invoicing: invoicingService,
