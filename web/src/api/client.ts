@@ -317,6 +317,19 @@ export interface PinView {
   onCurrentRevision: boolean
 }
 
+export interface RequirementView {
+  id: string
+  sectionId: string
+  sectionNumber: string
+  submittalType: string
+  description: string
+  /** Verbatim from the section. Checked by the server, shown by the client. */
+  quote: string
+  status: 'proposed' | 'accepted' | 'rejected' | 'satisfied'
+  confidence: string | null
+  submittalId: string | null
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -565,6 +578,18 @@ export class ApiClient {
 
   linkActivity(recordId: string, activityCode: string, kind = 'blocks'): Promise<{ ok: true }> {
     return this.request('POST', `/records/${recordId}/activities`, { activityCode, kind })
+  }
+
+  submittalRegister(projectId: string): Promise<{ requirements: RequirementView[] }> {
+    return this.request('GET', `/projects/${projectId}/submittal-register`)
+  }
+
+  acceptRequirement(requirementId: string): Promise<{ submittalId: string }> {
+    return this.request('POST', `/submittal-requirements/${requirementId}/accept`)
+  }
+
+  rejectRequirement(requirementId: string): Promise<{ ok: true }> {
+    return this.request('POST', `/submittal-requirements/${requirementId}/reject`)
   }
 
   sheets(projectId: string, discipline?: string): Promise<{ sheets: SheetView[] }> {

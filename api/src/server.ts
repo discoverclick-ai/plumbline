@@ -3,6 +3,7 @@ import {
   AnthropicInterpretationProvider,
   AnthropicNoticeDrafter,
   AnthropicObligationExtractor,
+  AnthropicRequirementExtractor,
   AttachmentService,
   authenticate,
   DrawingService,
@@ -16,8 +17,10 @@ import {
   PhotoService,
   renderClaimFile,
   ScheduleService,
+  SpecificationService,
   StatutoryService,
   type ObligationExtractionProvider,
+  type RequirementExtractionProvider,
   TOOLS,
   SyncService,
   BudgetService,
@@ -89,6 +92,7 @@ interface RequestContext {
   statutory: StatutoryService
   drafter: NoticeDraftService
   photos: PhotoService
+  specs: SpecificationService
   schedule: ScheduleService
   mcp: McpToolRunner
   commitments: CommitmentService
@@ -744,6 +748,51 @@ const ROUTES: Route[] = [
   })),
 
   // ---------------------------------------------------------------------
+  // Specifications, and the submittal register hiding in them
+  // ---------------------------------------------------------------------
+  //
+  // The whole subsystem had no routes at all, which made the best agent job
+  // in construction unreachable from every client in the product.
+
+  route('GET', '/projects/:projectId/submittal-register', async ({ actor, params, specs }) => ({
+    requirements: await specs.register(actor, params['projectId'] as string),
+  })),
+
+  route('POST', '/projects/:projectId/specification-books', async ({ actor, params, body, specs }) =>
+    specs.createBook(actor, {
+      projectId: params['projectId'] as string,
+      name: String(body['name'] ?? ''),
+      ...(body['issuedOn'] ? { issuedOn: String(body['issuedOn']) } : {}),
+    }),
+  ),
+
+  route('POST', '/specification-books/:bookId/sections', async ({ actor, params, body, specs }) =>
+    specs.addSection(actor, {
+      bookId: params['bookId'] as string,
+      number: String(body['number'] ?? ''),
+      title: String(body['title'] ?? ''),
+      body: String(body['body'] ?? ''),
+    }),
+  ),
+
+  /** Proposals, never submittals. Same gate as every other agent here. */
+  route('POST', '/specification-sections/:sectionId/extract', async ({ actor, params, specs }) =>
+    specs.extractRequirements(actor, params['sectionId'] as string),
+  ),
+
+  route('POST', '/submittal-requirements/:requirementId/accept', async ({ actor, params, body, specs }) =>
+    specs.accept(actor, params['requirementId'] as string, {
+      ...(body['specSection'] ? { specSection: String(body['specSection']) } : {}),
+      ...(body['assigneeUserId'] ? { assigneeUserId: String(body['assigneeUserId']) } : {}),
+    }),
+  ),
+
+  route('POST', '/submittal-requirements/:requirementId/reject', async ({ actor, params, specs }) => {
+    await specs.reject(actor, params['requirementId'] as string)
+    return { ok: true }
+  }),
+
+  // ---------------------------------------------------------------------
   // Photographs
   // ---------------------------------------------------------------------
 
@@ -1127,6 +1176,8 @@ export interface ApiServerOptions {
    * contracts subsystem without one by entering obligations by hand.
    */
   obligationExtractor?: ObligationExtractionProvider
+  /** Reads spec sections and proposes the submittals they require. */
+  requirementExtractor?: RequirementExtractionProvider
 }
 
 export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Server {
@@ -1180,6 +1231,17 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
     store ??= options.blobStore ?? new FilesystemBlobStore(process.env['PLUMBLINE_BLOB_ROOT'] ?? './.blobs')
     return store
   }
+
+  // Same lazily-built provider as the other two: constructing the SDK
+  // eagerly would stop a deployment with no model key serving any route.
+  let specExtractor: RequirementExtractionProvider | null = null
+  const specService = new SpecificationService(pool as Db, {
+    name: 'lazy',
+    extract: (request) => {
+      const provider = (specExtractor ??= options.requirementExtractor ?? new AnthropicRequirementExtractor())
+      return provider.extract(request)
+    },
+  })
 
   let photoService: PhotoService | null = null
   const photos = (): PhotoService => {
@@ -1251,6 +1313,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           statutory: statutoryService,
           drafter: draftService,
           photos: photos(),
+          specs: specService,
           mcp: mcpRunner,
           commitments: commitmentService,
           invoicing: invoicingService,
