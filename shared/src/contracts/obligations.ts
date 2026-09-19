@@ -4,6 +4,7 @@ import type { Actor } from '../kernel.js'
 import { hasLevel, hasPrivilege } from '../permissions.js'
 import { loadAccess } from '../repositories/permissions.js'
 import type { DurationUnit } from './calendar.js'
+import type { ClauseForScreening, ObligationExtractionProvider } from './extraction.js'
 import { quoteAppearsIn } from './segmentation.js'
 
 /**
@@ -95,8 +96,116 @@ export interface ProposeResult {
   discarded: { reason: string; quote: string }[]
 }
 
+export interface ProfileResult {
+  clausesScreened: number
+  candidates: number
+  proposed: number
+  discarded: { reason: string; quote: string }[]
+  screenModel: string
+  extractModel: string | null
+}
+
 export class ObligationService {
-  constructor(private readonly db: Db) {}
+  /**
+   * The extractor may be a thunk, and in production it is.
+   *
+   * The Anthropic SDK resolves credentials in its constructor and refuses to
+   * build in some runtimes at all, so constructing one eagerly means a
+   * deployment that never reads a contract cannot serve a single request. An
+   * earlier version passed the provider itself and took down every route in
+   * the web test suite, which is the same failure a customer without a model
+   * key would have hit on boot.
+   */
+  constructor(
+    private readonly db: Db,
+    private readonly extractor?: ObligationExtractionProvider | (() => ObligationExtractionProvider),
+  ) {}
+
+  private provider(): ObligationExtractionProvider | null {
+    if (!this.extractor) return null
+    return typeof this.extractor === 'function' ? this.extractor() : this.extractor
+  }
+
+  /**
+   * Reads a whole instrument and proposes what it found.
+   *
+   * Two passes. The cheap one decides which clauses are worth reading; the
+   * careful one reads only those. The split is not only about cost: sending a
+   * thousand clauses through a careful reader gives it a thousand chances to
+   * find an obligation in a clause that has none, and a contract profile full
+   * of invented deadlines is one nobody finishes reviewing.
+   *
+   * Everything it produces is a PROPOSAL. Nothing here starts a clock, and
+   * nothing here is trusted: every row still passes the quote gate, so a
+   * fabricated citation is discarded before it reaches the database rather
+   * than shown to somebody approving forty in a sitting.
+   */
+  async profile(actor: Actor, documentId: string): Promise<ProfileResult> {
+    const extractor = this.provider()
+    if (!extractor) {
+      throw new ValidationError('No extraction provider is configured on this deployment', [
+        { field: 'extractor', message: 'Obligations can still be entered by hand' },
+      ])
+    }
+
+    const { doc, clauses, typeKeys } = await withTenant(this.db, actor.tenantId, async (tx) => {
+      const found = await this.loadDocument(tx, actor.tenantId, documentId)
+      await this.assertPrivilege(tx, actor, found.project_id, 'upload')
+
+      const { rows } = await tx.query<ClauseForScreening & { clause_number: string | null }>(
+        `SELECT id, clause_number, heading, text FROM contract_clauses
+          WHERE tenant_id = $1 AND document_id = $2 ORDER BY order_index`,
+        [actor.tenantId, documentId],
+      )
+      const { rows: types } = await tx.query<{ key: string }>('SELECT key FROM record_types')
+      return {
+        doc: found,
+        clauses: rows.map((r) => ({
+          id: r.id,
+          clauseNumber: r.clause_number,
+          heading: r.heading,
+          text: r.text,
+        })),
+        typeKeys: types.map((t) => t.key),
+      }
+    })
+
+    if (clauses.length === 0) {
+      throw new ValidationError('This document has no clauses to read', [
+        { field: 'documentId', message: 'Segment the document first; nothing can cite an unsegmented instrument' },
+      ])
+    }
+
+    const screen = await extractor.screen(clauses)
+    const candidateIds = new Set(screen.verdicts.filter((v) => v.candidate).map((v) => v.clauseId))
+    const candidates = clauses.filter((c) => candidateIds.has(c.id))
+
+    const proposals: ProposedObligation[] = []
+    let extractModel: string | null = null
+
+    for (const clause of candidates) {
+      const result = await extractor.extract({
+        clause,
+        documentKind: doc.kind,
+        availableTypeKeys: typeKeys,
+      })
+      extractModel = result.model
+      for (const found of result.obligations) {
+        proposals.push({ ...found, clauseId: clause.id, extractedBy: result.model })
+      }
+    }
+
+    const written = await this.propose(actor, documentId, proposals)
+
+    return {
+      clausesScreened: clauses.length,
+      candidates: candidates.length,
+      proposed: written.proposed,
+      discarded: written.discarded,
+      screenModel: screen.model,
+      extractModel,
+    }
+  }
 
   /**
    * Writes proposals against a document's clauses.
@@ -324,9 +433,15 @@ export class ObligationService {
     tx: Db,
     tenantId: string,
     documentId: string,
-  ): Promise<{ project_id: string; parent_document_id: string | null; title: string }> {
-    const { rows } = await tx.query<{ project_id: string; parent_document_id: string | null; title: string }>(
-      'SELECT project_id, parent_document_id, title FROM contract_documents WHERE tenant_id = $1 AND id = $2',
+  ): Promise<{ project_id: string; parent_document_id: string | null; title: string; kind: string }> {
+    const { rows } = await tx.query<{
+      project_id: string
+      parent_document_id: string | null
+      title: string
+      kind: string
+    }>(
+      `SELECT project_id, parent_document_id, title, kind::text AS kind
+         FROM contract_documents WHERE tenant_id = $1 AND id = $2`,
       [tenantId, documentId],
     )
     const row = rows[0]

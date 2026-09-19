@@ -4,7 +4,7 @@ Status: stages A and C are built and tested; stage B is built except for the mod
 
 Built: `contract_documents`, `contract_clauses`, `project_calendars`, `project_holidays` (migration 0030); `contract_obligations`, `obligation_clocks`, `clock_engine_cursor` and the `notice` record type (0031). Deterministic segmentation, the quote gate, the deadline arithmetic with its frozen computation, the event-log clock engine with idempotent firing, promotion, expiry and discharge, obligation review with flow-down, API routes, and the contract profile screen.
 
-Not built: the extraction model behind the screen and extract passes (the seam is there, nothing calls a provider yet), notice drafting, the claim file, and the statutory deadline dataset.
+Not built: notice drafting, the claim file, and the statutory deadline dataset. Stage B is now complete: the two-pass profile (heuristic or model screening, then careful extraction over the candidates only), the Anthropic implementation of both passes, the `Read this contract` action on the review screen, and the discard count shown to the reviewer so the citation gate is visible rather than merely present.
 
 Depends on: the record kernel, ball in court, the capture pipeline and the approval gate, all of which exist.
 

@@ -378,6 +378,17 @@ export class ApiClient {
     return this.request('GET', `/contracts/${documentId}/obligations${suffix}`)
   }
 
+  profileContract(documentId: string): Promise<{
+    clausesScreened: number
+    candidates: number
+    proposed: number
+    discarded: { reason: string; quote: string }[]
+    screenModel: string
+    extractModel: string | null
+  }> {
+    return this.request('POST', `/contracts/${documentId}/profile`)
+  }
+
   acceptObligation(obligationId: string): Promise<{ ok: true }> {
     return this.request('POST', `/obligations/${obligationId}/accept`)
   }

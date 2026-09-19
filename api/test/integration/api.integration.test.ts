@@ -14,6 +14,7 @@ import {
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { createApiServer } from '../../src/server.js'
+import { ScriptedObligationExtractor } from '@plumbline/shared'
 import type { InterpretationProvider, ProviderRequest, ProviderResponse } from '@plumbline/shared'
 
 /** Scripted interpreter: the capture routes are exercised with no network. */
@@ -35,6 +36,13 @@ class ScriptedProvider implements InterpretationProvider {
 }
 
 const scripted = new ScriptedProvider()
+
+/**
+ * A contract reader with a script. Queues one screen verdict set and one
+ * extraction per call, so the route can be driven end to end with no network
+ * and no spend.
+ */
+const contractReader = new ScriptedObligationExtractor()
 
 /**
  * The API over a real database and a real HTTP socket. These assert the two
@@ -103,7 +111,7 @@ async function signIn(email: string): Promise<string> {
 
 beforeAll(async () => {
   pool = createPool({ connectionString: inject('databaseUrl') })
-  server = createApiServer(pool, { interpretationProvider: scripted })
+  server = createApiServer(pool, { interpretationProvider: scripted, obligationExtractor: contractReader })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 
@@ -620,5 +628,119 @@ describe('the MCP surface over the wire', () => {
       body: { name: 'get_record', arguments: {} },
     })
     expect(missing.status).toBe(400)
+  })
+})
+
+describe('reading a contract over the wire', () => {
+  const CONTRACT = [
+    'ARTICLE 8  TIME',
+    '',
+    '8.3.2 The Contractor shall give written notice to the Owner within twenty-one days after the',
+    'occurrence of the event giving rise to the claim.',
+    '',
+    '8.3.3 The Contract Documents consist of the Agreement and the Conditions.',
+  ].join('\n')
+
+  let documentId: string
+
+  it('takes an instrument and cuts it into citable clauses', async () => {
+    const created = await call('POST', `/projects/${projectId}/contracts`, {
+      token: pmToken,
+      body: { kind: 'prime_contract', title: 'Owner Prime Contract', executedAt: '2026-01-04' },
+    })
+    expect(created.status).toBe(200)
+    documentId = created.body.id
+
+    const segmented = await call('POST', `/contracts/${documentId}/segment`, {
+      token: pmToken,
+      body: { text: CONTRACT },
+    })
+    expect(segmented.status).toBe(200)
+    expect(segmented.body.needsManualSegmentation).toBe(false)
+
+    const clauses = await call('GET', `/contracts/${documentId}/clauses`, { token: pmToken })
+    expect(clauses.body.clauses.map((c: { clauseNumber: string }) => c.clauseNumber)).toContain('8.3.2')
+  })
+
+  it('reads it in two passes and proposes only what it can cite', async () => {
+    const clauses = await call('GET', `/contracts/${documentId}/clauses`, { token: pmToken })
+    const notice = clauses.body.clauses.find((c: { clauseNumber: string }) => c.clauseNumber === '8.3.2')
+
+    contractReader.pushScreen(
+      clauses.body.clauses.map((c: { id: string }) => ({ clauseId: c.id, candidate: c.id === notice.id })),
+    )
+    contractReader.pushExtraction([
+      {
+        obligationType: 'notice_of_claim',
+        obligorParty: 'our_org',
+        obligeeParty: 'counterparty',
+        quote: 'give written notice to the Owner within twenty-one days',
+        triggerDescription: 'An event giving rise to a claim occurs',
+        durationValue: 21,
+        durationUnit: 'days',
+        deadlineBasis: 'from_occurrence',
+        consequence: 'waiver_of_claim',
+      },
+      {
+        // Sounds right. Is not in the clause.
+        obligationType: 'notice_of_delay',
+        obligorParty: 'our_org',
+        obligeeParty: 'counterparty',
+        quote: 'give written notice to the Owner within seven days of the delay',
+        triggerDescription: 'A delay occurs',
+        durationValue: 7,
+        durationUnit: 'days',
+        deadlineBasis: 'from_occurrence',
+      },
+    ])
+
+    const profiled = await call('POST', `/contracts/${documentId}/profile`, { token: pmToken })
+    expect(profiled.status).toBe(200)
+    expect(profiled.body.candidates).toBe(1)
+    expect(profiled.body.proposed).toBe(1)
+    expect(profiled.body.discarded).toHaveLength(1)
+  })
+
+  it('starts a clock only once a person accepts the obligation', async () => {
+    const proposed = await call('GET', `/contracts/${documentId}/obligations`, { token: pmToken })
+    const obligation = proposed.body.obligations[0]
+    expect(obligation.status).toBe('proposed')
+
+    const before = await call('POST', `/projects/${projectId}/clocks/sweep`, { token: pmToken })
+    expect(before.body.fired.started).toBe(0)
+
+    const accepted = await call('POST', `/obligations/${obligation.id}/accept`, { token: pmToken })
+    expect(accepted.status).toBe(200)
+
+    const after = await call('GET', `/contracts/${documentId}/obligations?status=accepted`, { token: pmToken })
+    expect(after.body.obligations).toHaveLength(1)
+  })
+
+  it('refuses a trade partner the instrument they are not a party to', async () => {
+    // Not a 403. Telling them a prime contract exists on this job is itself
+    // the leak.
+    const refused = await call('GET', `/contracts/${documentId}/clauses`, { token: tradeToken })
+    expect(refused.status).toBe(404)
+  })
+})
+
+describe('booting without a model key', () => {
+  it('serves every other route on a deployment that never reads a contract', async () => {
+    // The Anthropic SDK resolves credentials in its constructor and refuses
+    // to build in some runtimes outright. An earlier version constructed the
+    // extractor while assembling the per-request context, so a deployment
+    // with no key returned 500 on every route in the product, contracts or
+    // not. The providers are built on first use, and this is the property
+    // that says so.
+    const bare = createApiServer(pool)
+    await new Promise<void>((resolve) => bare.listen(0, '127.0.0.1', resolve))
+    const url = `http://127.0.0.1:${(bare.address() as AddressInfo).port}`
+    try {
+      const res = await fetch(`${url}/record-types`, { headers: { authorization: `Bearer ${pmToken}` } })
+      expect(res.status).toBe(200)
+      expect(((await res.json()) as { types: unknown[] }).types.length).toBeGreaterThan(0)
+    } finally {
+      await new Promise<void>((resolve) => bare.close(() => resolve()))
+    }
   })
 })

@@ -2,6 +2,7 @@ import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { ClockEngine } from '../../src/contracts/clock-engine.js'
 import { ContractService } from '../../src/contracts/documents.js'
+import { HeuristicObligationScreener, ScriptedObligationExtractor } from '../../src/contracts/extraction.js'
 import { ObligationService } from '../../src/contracts/obligations.js'
 import { createPool, withTenant } from '../../src/db.js'
 import { RecordKernel, type Actor } from '../../src/kernel.js'
@@ -377,6 +378,87 @@ describe('the on-demand sweep', () => {
     await expect(
       engine.sweepProject({ tenantId: other.tenantId, userId: other.adminUserId }, projectId),
     ).rejects.toThrow()
+  })
+})
+
+describe('the two-pass profile', () => {
+  it('screens the whole instrument, reads only the candidates, and proposes nothing more', async () => {
+    const extractor = new ScriptedObligationExtractor()
+    const profiler = new ObligationService(pool, extractor)
+
+    const doc = await contracts.createDocument(gcPm, {
+      projectId,
+      kind: 'supplementary_conditions',
+      title: 'Supplementary Conditions',
+    })
+    await contracts.segmentDocument(gcPm, doc.id, SUBCONTRACT)
+    const clauses = await contracts.clauses(gcPm, doc.id)
+    const notice = clauses.find((c) => c.clauseNumber === '4.7.1')!
+
+    // Only the notice clause is a candidate. The rest are never read, which
+    // is the whole point of the split: a careful reader given a thousand
+    // clauses finds obligations in the ones that have none.
+    extractor.pushScreen(clauses.map((c) => ({ clauseId: c.id, candidate: c.id === notice.id })))
+    extractor.pushExtraction([
+      {
+        obligationType: 'differing_site_conditions',
+        obligorParty: 'counterparty',
+        obligeeParty: 'our_org',
+        quote: 'give written notice to the Contractor within five days after the first observance',
+        triggerDescription: 'A concealed condition was observed',
+        durationValue: 5,
+        durationUnit: 'days',
+        deadlineBasis: 'from_awareness',
+        consequence: 'waiver_of_claim',
+      },
+      {
+        // Reads like the contract. Says fourteen. Is not in it.
+        obligationType: 'notice_of_claim',
+        obligorParty: 'counterparty',
+        obligeeParty: 'our_org',
+        quote: 'give written notice to the Contractor within fourteen days of the condition',
+        triggerDescription: 'A claim arises',
+        durationValue: 14,
+        durationUnit: 'days',
+        deadlineBasis: 'from_occurrence',
+      },
+    ])
+
+    const result = await profiler.profile(gcPm, doc.id)
+
+    expect(result.clausesScreened).toBe(clauses.length)
+    expect(result.candidates).toBe(1)
+    expect(result.proposed).toBe(1)
+    // The gate runs on the model's output exactly as it runs on a person's.
+    expect(result.discarded).toHaveLength(1)
+    expect(result.discarded[0]!.reason).toMatch(/does not appear in the cited clause/)
+
+    const written = await profiler.list(gcPm, { documentId: doc.id })
+    expect(written).toHaveLength(1)
+    // Proposed. A profile run starts no clocks.
+    expect(written[0]!.status).toBe('proposed')
+    expect(written[0]!.clauseNumber).toBe('4.7.1')
+  })
+
+  it('refuses an instrument nobody has segmented', async () => {
+    const profiler = new ObligationService(pool, new ScriptedObligationExtractor())
+    const doc = await contracts.createDocument(gcPm, { projectId, kind: 'exhibit', title: 'Exhibit C' })
+    await expect(profiler.profile(gcPm, doc.id)).rejects.toThrow(/no clauses/)
+  })
+
+  it('says so plainly when no extractor is configured, rather than proposing nothing', async () => {
+    // Silence here would look exactly like a contract with no deadlines in
+    // it, which is the most dangerous thing this product could imply.
+    await expect(obligations.profile(gcPm, documentId)).rejects.toThrow(/No extraction provider/)
+  })
+
+  it('gets a usable candidate list with no model at all', async () => {
+    const clauses = await contracts.clauses(gcPm, documentId)
+    const { verdicts } = await new HeuristicObligationScreener().screen(
+      clauses.map((c) => ({ id: c.id, clauseNumber: c.clauseNumber, heading: c.heading, text: c.text })),
+    )
+    const notice = clauses.find((c) => c.clauseNumber === '4.7.1')!
+    expect(verdicts.find((v) => v.clauseId === notice.id)!.candidate).toBe(true)
   })
 })
 

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import {
   AnthropicInterpretationProvider,
+  AnthropicObligationExtractor,
   AttachmentService,
   authenticate,
   DrawingService,
@@ -9,6 +10,7 @@ import {
   EscalationService,
   McpToolRunner,
   ObligationService,
+  type ObligationExtractionProvider,
   TOOLS,
   SyncService,
   BudgetService,
@@ -776,6 +778,17 @@ const ROUTES: Route[] = [
     ),
   ),
 
+  /**
+   * Read the whole instrument.
+   *
+   * Runs the cheap screening pass over every clause and the careful pass over
+   * the candidates, and writes what survives the quote gate as proposals.
+   * Nothing it produces starts a clock.
+   */
+  route('POST', '/contracts/:documentId/profile', async ({ actor, params, obligations }) =>
+    obligations.profile(actor, params['documentId'] as string),
+  ),
+
   route('POST', '/contracts/:documentId/flow-down', async ({ actor, params, obligations }) =>
     obligations.flowDown(actor, params['documentId'] as string),
   ),
@@ -911,6 +924,12 @@ export interface ApiServerOptions {
    * contractors who will never want their drawings leaving the building.
    */
   blobStore?: BlobStore
+  /**
+   * Reads contracts. Injected by tests; constructed lazily otherwise, for the
+   * same reason as the interpreter, and a deployment can run the whole
+   * contracts subsystem without one by entering obligations by hand.
+   */
+  obligationExtractor?: ObligationExtractionProvider
 }
 
 export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Server {
@@ -922,7 +941,15 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
   const syncService = new SyncService(pool as Db)
   const escalationService = new EscalationService(pool as Db)
   const contractService = new ContractService(pool as Db)
-  const obligationService = new ObligationService(pool as Db)
+  // The service is built once; the EXTRACTOR behind it is built on first use.
+  // The context object is assembled per request, so anything constructed here
+  // that resolves credentials would be constructed on every request and would
+  // take down every route on a deployment that never reads a contract.
+  let extractor: ObligationExtractionProvider | null = null
+  const obligationService = new ObligationService(pool as Db, () => {
+    extractor ??= options.obligationExtractor ?? new AnthropicObligationExtractor()
+    return extractor
+  })
   const clockEngine = new ClockEngine(pool as Db)
   const mcpRunner = new McpToolRunner(pool as Db)
   const commitmentService = new CommitmentService(pool as Db)

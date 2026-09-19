@@ -177,6 +177,7 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [readReport, setReadReport] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -407,7 +408,46 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
           </Card>
 
           {selected ? (
-            <Card title={`Obligations · ${accepted.length} accepted, ${proposed.length} waiting`}>
+            <Card
+              title={`Obligations · ${accepted.length} accepted, ${proposed.length} waiting`}
+              actions={
+                <Button
+                  onClick={() => {
+                    setBusy('profile')
+                    setError(null)
+                    setReadReport(null)
+                    api
+                      .profileContract(selected)
+                      .then((r) => {
+                        setReadReport(
+                          `Read ${r.clausesScreened} clauses, looked closely at ${r.candidates}, proposed ${r.proposed}.` +
+                            (r.discarded.length > 0
+                              ? ` ${r.discarded.length} discarded: the quote was not in the clause.`
+                              : ''),
+                        )
+                        return api.obligations(selected)
+                      })
+                      .then((o) => setObligations(o.obligations))
+                      .catch((err: unknown) =>
+                        setError(err instanceof Error ? err.message : 'The contract could not be read'),
+                      )
+                      .finally(() => setBusy(null))
+                  }}
+                  disabled={busy === 'profile'}
+                >
+                  {busy === 'profile' ? 'Reading…' : 'Read this contract'}
+                </Button>
+              }
+            >
+              {/*
+                The discard count is shown, not hidden. It is the number that
+                says the citation gate is doing its job, and a reviewer who
+                never sees it has no reason to believe the quotes in front of
+                them were checked at all.
+              */}
+              {readReport ? (
+                <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--ink-muted)' }}>{readReport}</p>
+              ) : null}
               {obligations.length === 0 ? (
                 <EmptyState
                   title="Nothing extracted from this instrument yet"
