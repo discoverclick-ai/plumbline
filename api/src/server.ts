@@ -10,6 +10,7 @@ import {
   EscalationService,
   McpToolRunner,
   ObligationService,
+  ScheduleService,
   type ObligationExtractionProvider,
   TOOLS,
   SyncService,
@@ -78,6 +79,7 @@ interface RequestContext {
   contracts: ContractService
   obligations: ObligationService
   clocks: ClockEngine
+  schedule: ScheduleService
   mcp: McpToolRunner
   commitments: CommitmentService
   invoicing: InvoicingService
@@ -732,6 +734,55 @@ const ROUTES: Route[] = [
   })),
 
   // ---------------------------------------------------------------------
+  // Schedule
+  // ---------------------------------------------------------------------
+
+  route('GET', '/projects/:projectId/schedules', async ({ actor, params, schedule }) => ({
+    schedules: await schedule.schedules(actor, params['projectId'] as string),
+  })),
+
+  route('POST', '/projects/:projectId/schedules', async ({ actor, params, body, schedule }) =>
+    schedule.importXer(actor, {
+      projectId: params['projectId'] as string,
+      name: String(body['name'] ?? 'Schedule update'),
+      text: String(body['text'] ?? ''),
+      ...(body['asBaseline'] === true ? { asBaseline: true } : {}),
+    }),
+  ),
+
+  route('GET', '/projects/:projectId/lookahead', async ({ actor, params, query, schedule }) => ({
+    activities: await schedule.lookahead(
+      actor,
+      params['projectId'] as string,
+      Number(query.get('weeks') ?? 3),
+    ),
+  })),
+
+  /**
+   * What is going to stop us this week.
+   *
+   * The morning meeting, as a query. An activity with two days of float and
+   * an RFI that has been sitting eleven is not two problems.
+   */
+  route('GET', '/projects/:projectId/exposure', async ({ actor, params, schedule }) => ({
+    exposure: await schedule.exposure(actor, params['projectId'] as string),
+  })),
+
+  route('GET', '/records/:recordId/activities', async ({ actor, params, schedule }) => ({
+    activities: await schedule.linksFor(actor, params['recordId'] as string),
+  })),
+
+  route('POST', '/records/:recordId/activities', async ({ actor, params, body, schedule }) => {
+    await schedule.link(actor, {
+      recordId: params['recordId'] as string,
+      activityCode: String(body['activityCode'] ?? ''),
+      ...(body['kind'] ? { kind: body['kind'] as 'blocks' | 'informs' | 'delivers' | 'documents' } : {}),
+      ...(body['note'] ? { note: String(body['note']) } : {}),
+    })
+    return { ok: true }
+  }),
+
+  // ---------------------------------------------------------------------
   // Contracts, obligations and the notice clock
   // ---------------------------------------------------------------------
 
@@ -951,6 +1002,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
     return extractor
   })
   const clockEngine = new ClockEngine(pool as Db)
+  const scheduleService = new ScheduleService(pool as Db)
   const mcpRunner = new McpToolRunner(pool as Db)
   const commitmentService = new CommitmentService(pool as Db)
   const invoicingService = new InvoicingService(pool as Db)
@@ -1028,6 +1080,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           contracts: contractService,
           obligations: obligationService,
           clocks: clockEngine,
+          schedule: scheduleService,
           mcp: mcpRunner,
           commitments: commitmentService,
           invoicing: invoicingService,

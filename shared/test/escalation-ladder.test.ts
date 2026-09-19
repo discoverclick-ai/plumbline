@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { audienceFor, DEFAULT_LADDER, levelFor, type OverdueItem } from '../src/escalation.js'
+import { audienceFor, DEFAULT_LADDER, describeImpact, levelFor, type OverdueItem } from '../src/escalation.js'
 
 /**
  * The ladder, argued with directly.
@@ -84,5 +84,50 @@ describe('the ladder itself', () => {
     // them is ignored. A longer ladder is a filter rule.
     expect(DEFAULT_LADDER).toHaveLength(4)
     expect(DEFAULT_LADDER.filter((r) => r.daysPastDue < 0)).toHaveLength(1)
+  })
+})
+
+describe('what the chase actually says', () => {
+  it('names the activity, when it starts, and how much room is left', () => {
+    // "RFI-014 is eleven days overdue" is a nag somebody files. This is a
+    // phone call, because it tells the reader what it costs them to keep
+    // sitting on it.
+    expect(
+      describeImpact({ activityName: 'Erect structural steel', startAt: '2026-03-05', floatDays: 2 }),
+    ).toBe('This is holding up Erect structural steel, which starts 2026-03-05 with 2 days of float.')
+
+    expect(describeImpact({ activityName: 'Install curtain wall', startAt: '2026-04-01', floatDays: 1 })).toContain(
+      '1 day of float',
+    )
+  })
+
+  it('says critical path rather than zero days of float', () => {
+    expect(describeImpact({ activityName: 'Pour slab', startAt: '2026-03-09', floatDays: 0 })).toMatch(
+      /on the critical path/,
+    )
+    expect(describeImpact({ activityName: 'Pour slab', startAt: '2026-03-09', floatDays: -3 })).toMatch(
+      /on the critical path/,
+    )
+  })
+
+  it('does not subtract the days already waited', () => {
+    // That subtraction is a judgement a scheduler would not sign. The reader
+    // can do it in their head, and they will.
+    const line = describeImpact({ activityName: 'Erect steel', startAt: '2026-03-05', floatDays: 2 })
+    expect(line).toContain('2 days of float')
+    // No negative float, and no arithmetic the schedule did not do.
+    expect(line).not.toMatch(/-\d+ days? of float/)
+  })
+
+  it('says nothing at all when nothing is linked', () => {
+    // An invented consequence is worse than none: the first one a reader
+    // checks and finds wrong is the last one they read.
+    expect(describeImpact(null)).toBe('')
+  })
+
+  it('is honest about an activity with no dates on it', () => {
+    expect(describeImpact({ activityName: 'Commissioning', startAt: null, floatDays: null })).toBe(
+      'This is holding up Commissioning, which is not yet scheduled.',
+    )
   })
 })

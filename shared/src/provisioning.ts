@@ -100,6 +100,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
         privileges: ['upload', 'segment', 'view_terms', 'accept_obligation', 'toll_clock', 'manage_calendar'],
       },
       { toolKey: 'notices', level: 'standard', privileges: ['create', 'issue', 'stand_down'] },
+      { toolKey: 'schedule', level: 'standard', privileges: ['import', 'set_baseline', 'link'] },
       { toolKey: 'documents', level: 'standard' },
       { toolKey: 'project_team', level: 'standard', privileges: ['manage_members'] },
     ],
@@ -136,6 +137,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       // it. They do not profile the contractor's subcontracts.
       { toolKey: 'contracts', level: 'read_only' },
       { toolKey: 'notices', level: 'standard', privileges: ['create', 'issue'] },
+      { toolKey: 'schedule', level: 'read_only' },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
     ],
@@ -174,6 +176,10 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       // Serving notice up the chain is most of what protects a sub's claim,
       // and a sub who cannot do it in this system will do it in email.
       { toolKey: 'notices', level: 'standard', privileges: ['create', 'issue'] },
+      // Read, and link. The sub knows better than anybody which activity
+      // their own RFI is holding up, and a link they cannot make is one
+      // nobody makes.
+      { toolKey: 'schedule', level: 'read_only', privileges: ['link'] },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
     ],
@@ -208,6 +214,8 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       // language is not part of that, so the clock carries its clause number
       // and the text stays behind `contracts`.
       { toolKey: 'notices', level: 'standard', privileges: ['create'] },
+      // The lookahead is the super's document. They do not import it.
+      { toolKey: 'schedule', level: 'read_only', privileges: ['link'] },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
     ],
@@ -244,6 +252,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'capture', level: 'read_only' },
       { toolKey: 'contracts', level: 'read_only' },
       { toolKey: 'notices', level: 'standard', privileges: ['create', 'issue'] },
+      { toolKey: 'schedule', level: 'read_only', privileges: ['link'] },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
     ],
@@ -270,6 +279,9 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'specifications', level: 'standard', privileges: ['upload'] },
       { toolKey: 'capture', level: 'read_only' },
       { toolKey: 'change_management', level: 'read_only' },
+      // Seeing what a slow answer is holding up is most of what makes an
+      // answer fast.
+      { toolKey: 'schedule', level: 'read_only' },
       { toolKey: 'documents', level: 'read_only' },
       { toolKey: 'project_team', level: 'read_only' },
     ],

@@ -4,6 +4,7 @@ import { createPool, withTenant } from '../../src/db.js'
 import { EscalationService } from '../../src/escalation.js'
 import { ValidationError } from '../../src/errors.js'
 import { RecordKernel, type Actor } from '../../src/kernel.js'
+import { ScheduleService } from '../../src/schedule/service.js'
 import {
   addProjectMember,
   createOrganization,
@@ -173,5 +174,56 @@ describe('deciding a chase', () => {
     )
     expect(Number(rows[0]?.n)).toBe(1)
     expect((await escalations.pending(pm, projectId)).some((e) => e.id === chase.id)).toBe(false)
+  })
+})
+
+describe('the chase that gets answered', () => {
+  const schedule = () => new ScheduleService(pool)
+
+  it('tells the architect what their silence is holding up', async () => {
+    const tab = (...cells: string[]): string => cells.join('\t')
+    const soon = new Date(Date.now() + 4 * 86_400_000).toISOString().slice(0, 10)
+
+    await schedule().importXer(pm, {
+      projectId,
+      name: 'Current',
+      text: [
+        tab('ERMHDR', '18.8.0', '2026-03-02', 'Project', 'admin', 'P6'),
+        tab('%T', 'PROJECT'),
+        tab('%F', 'proj_id', 'day_hr_cnt'),
+        tab('%R', '100', '8'),
+        tab('%T', 'TASK'),
+        tab('%F', 'task_id', 'task_code', 'task_name', 'task_type', 'early_start_date', 'total_float_hr_cnt'),
+        tab('%R', '1', 'A1010', 'Erect structural steel', 'TT_Task', `${soon} 08:00`, '16'),
+        tab('%E'),
+      ].join('\n'),
+    })
+
+    const blocking = await waiting('Anchor bolt embedment at grid C4', 6)
+    await schedule().link(pm, { recordId: blocking, activityCode: 'A1010', kind: 'blocks' })
+
+    await escalations.sweep(pm, projectId)
+    const chase = (await escalations.pending(pm, projectId)).find((c) => c.recordId === blocking)!
+
+    // This is the difference between a chase somebody answers and one they
+    // file. "RFI-018 is six days overdue" is a nag; naming the activity, the
+    // date and the float is a phone call, because it says what it costs the
+    // reader to keep sitting on it.
+    expect(chase.message).toContain('Erect structural steel')
+    expect(chase.message).toContain('2 days of float')
+    expect(chase.reason).toContain('Erect structural steel')
+
+    // And it still reads as a person writing to a person.
+    expect(chase.message).not.toMatch(/automated|do not reply/i)
+  })
+
+  it('says nothing about the schedule when nothing is linked', async () => {
+    // An invented consequence is worse than none. The first one a reader
+    // checks and finds wrong is the last one they read.
+    const unlinked = await waiting('Nothing depends on this one', 7)
+    await escalations.sweep(pm, projectId)
+
+    const chase = (await escalations.pending(pm, projectId)).find((c) => c.recordId === unlinked)!
+    expect(chase.message).not.toMatch(/holding up/)
   })
 })

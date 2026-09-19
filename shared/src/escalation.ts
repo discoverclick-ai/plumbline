@@ -116,6 +116,31 @@ async function assertOnProject(db: Db, actor: Actor, projectId: string): Promise
   }
 }
 
+export interface ScheduleImpact {
+  activityName: string
+  startAt: string | null
+  floatDays: number | null
+}
+
+/**
+ * The sentence that turns a nag into a phone call.
+ *
+ * Deliberately states the float as the schedule has it and does NOT subtract
+ * the days already waited, because that subtraction is a judgement a
+ * scheduler would not sign. The reader can do it in their head, and they
+ * will.
+ */
+export function describeImpact(impact: ScheduleImpact | null): string {
+  if (!impact) return ''
+  const when = impact.startAt ? ` starts ${impact.startAt}` : ' is not yet scheduled'
+  if (impact.floatDays === null) return `This is holding up ${impact.activityName}, which${when}.`
+  if (impact.floatDays <= 0) {
+    return `This is holding up ${impact.activityName}, which${when} and is on the critical path.`
+  }
+  const days = impact.floatDays === 1 ? 'day' : 'days'
+  return `This is holding up ${impact.activityName}, which${when} with ${impact.floatDays} ${days} of float.`
+}
+
 export class EscalationService {
   constructor(
     private readonly db: Db,
@@ -178,7 +203,10 @@ export class EscalationService {
         continue
       }
       const notifiedId = audienceFor(item, rule.level)
-      const draft = this.compose(item, rule.level)
+      const impact = await withTenant(this.db, actor.tenantId, (tx) =>
+        this.scheduleImpact(tx, actor.tenantId, item.recordId),
+      )
+      const draft = this.compose(item, rule.level, impact)
 
       const inserted = await withTenant(this.db, actor.tenantId, async (tx) => {
         // Once per level per record. A daily nag is a filter rule inside a
@@ -221,19 +249,65 @@ export class EscalationService {
    * machinery is one the recipient learns to ignore, and one the sender is
    * embarrassed to have their name on.
    */
-  private compose(item: OverdueItem, level: EscalationRule['level']): { reason: string; message: string } {
+  /**
+   * What this is holding up, if anything.
+   *
+   * The difference between a chase somebody answers and one they file. "RFI-014
+   * is eleven days overdue" is a nag. "RFI-014 is eleven days overdue and
+   * steel erection starts Thursday with two days of float" is a phone call,
+   * because the second one tells the reader what it costs them to keep
+   * sitting on it.
+   *
+   * Read from the CURRENT schedule and the `blocks` links only. An activity
+   * a record merely informs is not a reason to lean on anybody.
+   */
+  private async scheduleImpact(tx: Db, tenantId: string, recordId: string): Promise<ScheduleImpact | null> {
+    // to_char, not the raw DATE. This codebase configures node-pg to hand
+    // dates back as strings rather than as Date objects, and calling
+    // toISOString on one threw at exactly the moment a chase was being
+    // drafted, which is the worst place in the product for a surprise.
+    const { rows } = await tx.query<{ name: string; start_at: string | null; total_float_days: string | null }>(
+      `SELECT a.name, to_char(a.start_at, 'YYYY-MM-DD') AS start_at, a.total_float_days
+         FROM activity_links l
+         JOIN schedules s ON s.tenant_id = l.tenant_id AND s.project_id = l.project_id AND s.is_current
+         JOIN schedule_activities a ON a.schedule_id = s.id AND a.activity_code = l.activity_code
+        WHERE l.tenant_id = $1 AND l.record_id = $2 AND l.kind = 'blocks' AND a.actual_finish IS NULL
+        ORDER BY a.total_float_days NULLS LAST
+        LIMIT 1`,
+      [tenantId, recordId],
+    )
+    const row = rows[0]
+    if (!row) return null
+    return {
+      activityName: row.name,
+      startAt: row.start_at ?? null,
+      floatDays: row.total_float_days === null ? null : Number(row.total_float_days),
+    }
+  }
+
+  private compose(
+    item: OverdueItem,
+    level: EscalationRule['level'],
+    impact: ScheduleImpact | null,
+  ): { reason: string; message: string } {
     const late = item.daysPastDue ?? 0
+    const impactClause = describeImpact(impact)
+
     const reason =
       level === 'reminder'
-        ? `${item.designation} is due in ${Math.abs(late)} day${Math.abs(late) === 1 ? '' : 's'} and has been with ${item.holderName} for ${item.daysWaiting}.`
-        : `${item.designation} is ${late} day${late === 1 ? '' : 's'} past due with ${item.holderName}, ${item.daysWaiting} days after it was assigned.`
+        ? `${item.designation} is due in ${Math.abs(late)} day${Math.abs(late) === 1 ? '' : 's'} and has been with ${item.holderName} for ${item.daysWaiting}.${impactClause ? ` ${impactClause}` : ''}`
+        : `${item.designation} is ${late} day${late === 1 ? '' : 's'} past due with ${item.holderName}, ${item.daysWaiting} days after it was assigned.${impactClause ? ` ${impactClause}` : ''}`
+
+    // The impact goes in its own paragraph, before the ask. A reader who
+    // stops after two lines should already know what it costs them.
+    const consequence = impactClause ? `\n\n${impactClause}` : ''
 
     const message =
       level === 'reminder'
-        ? `${item.designation} — ${item.title}\n\nThis is due in ${Math.abs(late)} day${Math.abs(late) === 1 ? '' : 's'}. ${item.expectedAction}.`
+        ? `${item.designation} — ${item.title}${consequence}\n\nThis is due in ${Math.abs(late)} day${Math.abs(late) === 1 ? '' : 's'}. ${item.expectedAction}.`
         : level === 'critical'
-          ? `${item.designation} — ${item.title}\n\nThis has been outstanding ${late} days past its due date. ${item.expectedAction}. Let me know today whether this is coming, or we will proceed on the basis that it is not and price the consequence.`
-          : `${item.designation} — ${item.title}\n\nThis went past due ${late} day${late === 1 ? '' : 's'} ago. ${item.expectedAction}. Can you let me know where it stands?`
+          ? `${item.designation} — ${item.title}${consequence}\n\nThis has been outstanding ${late} days past its due date. ${item.expectedAction}. Let me know today whether this is coming, or we will proceed on the basis that it is not and price the consequence.`
+          : `${item.designation} — ${item.title}${consequence}\n\nThis went past due ${late} day${late === 1 ? '' : 's'} ago. ${item.expectedAction}. Can you let me know where it stands?`
 
     return { reason, message }
   }
