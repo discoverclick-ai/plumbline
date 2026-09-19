@@ -90,6 +90,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'drawings', level: 'standard', privileges: ['upload', 'publish', 'pin'] },
       { toolKey: 'specifications', level: 'standard', privileges: ['upload', 'review'] },
       { toolKey: 'capture', level: 'standard', privileges: ['review'] },
+      { toolKey: 'photos', level: 'standard', privileges: ['upload', 'organise', 'delete'] },
       // The GC's PM is the one who profiles the contract and decides which
       // extracted obligations are real. `view_terms` is what extends reading
       // past the instruments their own company signed, and it is why this
@@ -144,6 +145,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'drawings', level: 'read_only', privileges: ['pin'] },
       { toolKey: 'specifications', level: 'read_only' },
       { toolKey: 'capture', level: 'read_only' },
+      { toolKey: 'photos', level: 'read_only' },
       // A party to the prime, so they read it, and they serve notices under
       // it. They do not profile the contractor's subcontracts.
       { toolKey: 'contracts', level: 'read_only' },
@@ -178,6 +180,9 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'invoicing', level: 'read_only', privileges: ['submit'] },
       { toolKey: 'drawings', level: 'read_only', privileges: ['pin'] },
       { toolKey: 'specifications', level: 'read_only' },
+      // Subs photograph their own work constantly, and a sub who cannot put
+      // a photograph on their own T&M ticket will text it instead.
+      { toolKey: 'photos', level: 'standard', privileges: ['upload', 'organise'] },
       { toolKey: 'capture', level: 'standard', privileges: ['review'] },
       // read_only WITHOUT view_terms: the sub reads the subcontract they
       // signed, because they are its counterparty, and sees no other
@@ -220,6 +225,8 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'drawings', level: 'read_only', privileges: ['pin'] },
       { toolKey: 'specifications', level: 'read_only' },
       { toolKey: 'capture', level: 'standard', privileges: ['review'] },
+      // The super takes more photographs than anybody on the job.
+      { toolKey: 'photos', level: 'standard', privileges: ['upload', 'organise'] },
       // A notice is often the super's to write, because the super is the one
       // who watched the condition happen. Reading the prime's indemnity
       // language is not part of that, so the clock carries its clause number
@@ -261,6 +268,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'drawings', level: 'read_only', privileges: ['pin'] },
       { toolKey: 'specifications', level: 'read_only' },
       { toolKey: 'capture', level: 'read_only' },
+      { toolKey: 'photos', level: 'standard', privileges: ['upload'] },
       { toolKey: 'contracts', level: 'read_only' },
       { toolKey: 'notices', level: 'standard', privileges: ['create', 'issue'] },
       { toolKey: 'schedule', level: 'read_only', privileges: ['link'] },
@@ -289,6 +297,7 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       { toolKey: 'drawings', level: 'standard', privileges: ['upload', 'publish', 'pin'] },
       { toolKey: 'specifications', level: 'standard', privileges: ['upload'] },
       { toolKey: 'capture', level: 'read_only' },
+      { toolKey: 'photos', level: 'standard', privileges: ['upload'] },
       { toolKey: 'change_management', level: 'read_only' },
       // Seeing what a slow answer is holding up is most of what makes an
       // answer fast.

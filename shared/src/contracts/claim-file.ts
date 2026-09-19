@@ -244,13 +244,33 @@ export class ClaimFileService {
   private async loadEvidence(tx: Db, tenantId: string, recordId: string | null): Promise<ClaimFile['evidence']> {
     if (!recordId) return { items: [], gap: 'No record is linked to this clock, so no field evidence is attached.' }
 
+    // Captures AND photographs, in one list ordered by when they were taken.
+    // A photograph linked to the record by hand is the same kind of evidence
+    // as one that arrived through the capture pipeline, and a claim file that
+    // showed only the second would be missing most of what the job actually
+    // recorded.
     const { rows } = await tx.query<Record<string, unknown>>(
       `SELECT c.kind::text AS kind, c.captured_at, c.latitude, c.longitude, c.text, u.name AS captured_by
          FROM captures c
          JOIN capture_proposals p ON p.capture_id = c.id
          JOIN users u ON u.id = c.captured_by AND u.tenant_id = c.tenant_id
         WHERE c.tenant_id = $1 AND p.record_id = $2
-        ORDER BY c.captured_at`,
+        UNION ALL
+       SELECT 'photo' AS kind,
+              -- A photograph's own timestamp when the camera wrote one, and
+              -- the upload otherwise. Which of the two it is matters, so the
+              -- caption says so rather than leaving a reader to assume.
+              coalesce(ph.taken_at_local AT TIME ZONE 'UTC', ph.uploaded_at) AS captured_at,
+              ph.latitude, ph.longitude,
+              coalesce(ph.caption, ph.filename, 'Photograph')
+                || CASE WHEN ph.taken_at_local IS NULL THEN ' (no timestamp from the camera; upload time shown)'
+                        ELSE '' END AS text,
+              pu.name AS captured_by
+         FROM photos ph
+         JOIN photo_record_links pl ON pl.photo_id = ph.id
+         JOIN users pu ON pu.id = ph.uploaded_by AND pu.tenant_id = ph.tenant_id
+        WHERE ph.tenant_id = $1 AND pl.record_id = $2
+        ORDER BY captured_at`,
       [tenantId, recordId],
     )
 

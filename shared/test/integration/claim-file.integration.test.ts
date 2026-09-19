@@ -368,6 +368,30 @@ describe('the document itself', () => {
   })
 })
 
+describe('photographs as evidence', () => {
+  it('puts a photograph linked by hand in the file alongside the captures', async () => {
+    const { PhotoService } = await import('../../src/photos/service.js')
+    const { FilesystemBlobStore } = await import('../../src/storage/filesystem.js')
+    const photos = new PhotoService(pool, new FilesystemBlobStore(`/tmp/plumbline-claim-photos-${Date.now()}`))
+
+    const { photo } = await photos.upload(pm, {
+      projectId,
+      filename: 'obstruction.jpg',
+      contentType: 'image/jpeg',
+      bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 5, 5, 5, 5]),
+      caption: 'Concrete obstruction at the north footing',
+    })
+    await photos.linkToRecord(pm, photo.id, observationId)
+
+    const file = await claims.assemble(pm, clockId)
+    const captions = file.evidence.items.map((i) => i.text).join(' ')
+    expect(captions).toContain('Concrete obstruction at the north footing')
+    // No timestamp from the camera, and the file says so rather than letting
+    // a reader assume the upload time is when the photograph was taken.
+    expect(captions).toMatch(/no timestamp from the camera/)
+  })
+})
+
 describe('drafting the letter', () => {
   it('writes a notice that quotes the clause and claims nothing', async () => {
     const drafter = new NoticeDraftService(pool, new TemplateNoticeDrafter())

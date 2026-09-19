@@ -13,6 +13,7 @@ import {
   McpToolRunner,
   NoticeDraftService,
   ObligationService,
+  PhotoService,
   renderClaimFile,
   ScheduleService,
   StatutoryService,
@@ -87,6 +88,7 @@ interface RequestContext {
   claims: ClaimFileService
   statutory: StatutoryService
   drafter: NoticeDraftService
+  photos: PhotoService
   schedule: ScheduleService
   mcp: McpToolRunner
   commitments: CommitmentService
@@ -742,6 +744,79 @@ const ROUTES: Route[] = [
   })),
 
   // ---------------------------------------------------------------------
+  // Photographs
+  // ---------------------------------------------------------------------
+
+  route('GET', '/projects/:projectId/photos', async ({ actor, params, query, photos }) => ({
+    photos: await photos.list(actor, params['projectId'] as string, {
+      ...(query.get('from') ? { from: query.get('from') as string } : {}),
+      ...(query.get('to') ? { to: query.get('to') as string } : {}),
+      ...(query.get('albumId') ? { albumId: query.get('albumId') as string } : {}),
+      ...(query.get('recordId') ? { recordId: query.get('recordId') as string } : {}),
+      ...(query.get('undated') === 'true' ? { undatedOnly: true } : {}),
+    }),
+  })),
+
+  route(
+    'POST',
+    '/projects/:projectId/photos',
+    async ({ actor, params, req, photos }) => {
+      // Streamed and size-capped here rather than buffered by a body parser,
+      // same as attachments: a phone uploading a twelve megapixel photograph
+      // over site wifi is the normal case, not the edge.
+      const chunks: Buffer[] = []
+      let size = 0
+      for await (const chunk of req) {
+        size += (chunk as Buffer).length
+        if (size > MAX_UPLOAD_BYTES) {
+          throw new KernelError('payload_too_large', 'That photograph is too large', 413)
+        }
+        chunks.push(chunk as Buffer)
+      }
+      const bytes = Buffer.concat(chunks)
+
+      return photos.upload(actor, {
+        projectId: params['projectId'] as string,
+        filename: String(req.headers['x-filename'] ?? 'photo.jpg'),
+        contentType: String(req.headers['content-type'] ?? 'image/jpeg'),
+        bytes,
+        ...(req.headers['x-caption'] ? { caption: String(req.headers['x-caption']) } : {}),
+      })
+    },
+    { binary: true },
+  ),
+
+  route('GET', '/photos/:photoId/file', async ({ actor, params, photos, res }) => {
+    const file = await photos.download(actor, params['photoId'] as string)
+    res.writeHead(200, {
+      'content-type': file.contentType,
+      'content-length': file.bytes.byteLength,
+      // Inline: a photograph is looked at, not filed.
+      'content-disposition': `inline; filename="${file.filename.replace(/"/g, '')}"`,
+    })
+    res.end(file.bytes)
+    return null
+  }),
+
+  route('POST', '/projects/:projectId/photo-albums', async ({ actor, params, body, photos }) =>
+    photos.createAlbum(
+      actor,
+      params['projectId'] as string,
+      String(body['name'] ?? ''),
+      body['description'] ? String(body['description']) : undefined,
+    ),
+  ),
+
+  route('POST', '/photo-albums/:albumId/photos', async ({ actor, params, body, photos }) =>
+    photos.addToAlbum(actor, params['albumId'] as string, (body['photoIds'] ?? []) as string[]),
+  ),
+
+  route('POST', '/records/:recordId/photos', async ({ actor, params, body, photos }) => {
+    await photos.linkToRecord(actor, String(body['photoId'] ?? ''), params['recordId'] as string)
+    return { ok: true }
+  }),
+
+  // ---------------------------------------------------------------------
   // Schedule
   // ---------------------------------------------------------------------
 
@@ -1106,6 +1181,12 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
     return store
   }
 
+  let photoService: PhotoService | null = null
+  const photos = (): PhotoService => {
+    photoService ??= new PhotoService(pool as Db, blobStore())
+    return photoService
+  }
+
   let attachmentService: AttachmentService | null = null
   const attachments = (): AttachmentService => {
     attachmentService ??= new AttachmentService(pool as Db, blobStore())
@@ -1169,6 +1250,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           claims: claimFileService,
           statutory: statutoryService,
           drafter: draftService,
+          photos: photos(),
           mcp: mcpRunner,
           commitments: commitmentService,
           invoicing: invoicingService,
