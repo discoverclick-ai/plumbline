@@ -377,6 +377,34 @@ export interface SyncConflictView {
   dropped: { field: string; value: string }[]
 }
 
+export interface CompanyView {
+  id: string
+  name: string
+  kind: string
+  trade: string | null
+  isSelf: boolean
+  userCount: number
+}
+
+export interface PersonView {
+  id: string
+  name: string
+  email: string
+  jobTitle: string | null
+  organizationId: string
+  organizationName: string
+  companyTemplateName: string | null
+}
+
+export interface TemplateView {
+  id: string
+  name: string
+  scope: 'company' | 'project'
+  /** Which company kinds this template was written for. */
+  appliesToOrgKinds: string[] | null
+  isDefault: boolean
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -654,6 +682,51 @@ export class ApiClient {
 
   linkActivity(recordId: string, activityCode: string, kind = 'blocks'): Promise<{ ok: true }> {
     return this.request('POST', `/records/${recordId}/activities`, { activityCode, kind })
+  }
+
+  startProject(input: {
+    number: string
+    name: string
+    stage?: string
+    city?: string
+    stateCode?: string
+    contractValue?: string
+  }): Promise<{ id: string }> {
+    return this.request('POST', '/projects', input)
+  }
+
+  companies(): Promise<{ companies: CompanyView[] }> {
+    return this.request('GET', '/companies')
+  }
+
+  addCompany(input: { name: string; kind: string; trade?: string }): Promise<{ id: string }> {
+    return this.request('POST', '/companies', input)
+  }
+
+  people(): Promise<{ people: PersonView[] }> {
+    return this.request('GET', '/people')
+  }
+
+  addPerson(input: {
+    organizationId: string
+    email: string
+    name: string
+    jobTitle?: string
+    companyPermissionTemplateId?: string
+  }): Promise<{ id: string }> {
+    return this.request('POST', '/people', input)
+  }
+
+  permissionTemplates(scope?: 'company' | 'project'): Promise<{ templates: TemplateView[] }> {
+    return this.request('GET', `/permission-templates${scope ? `?scope=${scope}` : ''}`)
+  }
+
+  addProjectMember(
+    projectId: string,
+    userId: string,
+    permissionTemplateName?: string,
+  ): Promise<{ ok: true }> {
+    return this.request('POST', `/projects/${projectId}/members`, { userId, permissionTemplateName })
   }
 
   submittalRegister(projectId: string): Promise<{ requirements: RequirementView[] }> {

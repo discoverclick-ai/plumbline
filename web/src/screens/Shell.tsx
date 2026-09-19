@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ProjectView } from '../api/client.js'
+import { Directory } from './Directory.tsx'
 import { ToolLandingPage } from '../layouts/index.js'
 import { atLeast, useSession } from '../session/SessionProvider.tsx'
 import { Banner, Button, Card, Field, Input, Pill, Spinner, Table, Tabs } from '../ui/index.js'
@@ -77,22 +78,86 @@ export function Portfolio({ onOpenProject }: { onOpenProject: (project: ProjectV
   const [projects, setProjects] = useState<ProjectView[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [view, setView] = useState<'projects' | 'directory'>('projects')
+  const [starting, setStarting] = useState(false)
+  const [number, setNumber] = useState('')
+  const [name, setName] = useState('')
 
-  useEffect(() => {
+  const reload = (): void => {
     api
       .projects()
       .then((result) => setProjects(result.projects))
       .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Could not load projects'))
       .finally(() => setLoading(false))
-  }, [api])
+  }
+
+  useEffect(reload, [api])
+
+  // The directory is a whole screen rather than a tab on this one, because
+  // adding companies and people is a different job from running a project
+  // and is done by different people.
+  if (view === 'directory') {
+    return (
+      <div>
+        <div style={{ padding: 'var(--space-3) var(--space-4)' }}>
+          <Button variant="ghost" onClick={() => setView('projects')}>
+            ← Projects
+          </Button>
+        </div>
+        <Directory />
+      </div>
+    )
+  }
 
   return (
     <ToolLandingPage
       title="Projects"
       subtitle={me?.user ? `${me.user.organization}` : undefined}
-      actions={<Button onClick={() => void signOut()}>Sign out</Button>}
+      actions={
+        <>
+          <Button variant="ghost" onClick={() => setView('directory')}>
+            Directory
+          </Button>
+          <Button variant="ghost" onClick={() => setStarting((on) => !on)}>
+            {starting ? 'Cancel' : 'Start a project'}
+          </Button>
+          <Button onClick={() => void signOut()}>Sign out</Button>
+        </>
+      }
       banner={error && <Banner tone="danger">{error}</Banner>}
     >
+      {starting ? (
+        <Card title="Start a project">
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+              Number
+              <Input value={number} onChange={setNumber} placeholder="26-101" />
+            </label>
+            <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+              Name
+              <Input value={name} onChange={setName} placeholder="Riverside Depot" />
+            </label>
+            <Button
+              disabled={number.trim() === '' || name.trim() === ''}
+              onClick={() => {
+                api
+                  .startProject({ number: number.trim(), name: name.trim() })
+                  .then(() => {
+                    setStarting(false)
+                    setNumber('')
+                    setName('')
+                    reload()
+                  })
+                  .catch((err: unknown) =>
+                    setError(err instanceof Error ? err.message : 'That project could not be started'),
+                  )
+              }}
+            >
+              Start it
+            </Button>
+          </div>
+        </Card>
+      ) : null}
       <Card>
         {loading ? (
           <Spinner />
