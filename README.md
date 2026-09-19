@@ -63,13 +63,34 @@ docs/     the Procore teardown this is built from, and specs for what comes next
 
 ```bash
 npm install
-npm test                       # boots its own Postgres, applies every migration, 121 tests
+npm test                       # boots its own Postgres, applies every migration, 443 tests
 
 # a real deployment
 OWNER_DATABASE_URL=postgres://<owner>@host/plumbline npm run migrate
 OWNER_DATABASE_URL=postgres://<owner>@host/plumbline npm run provision:app-role
 npm start                      # the API on :8080
+npm run start:worker           # the passes nobody clicks; see below
 ```
+
+### The worker is not optional
+
+Four subsystems read the event log forward from a durable cursor and act on
+what they find: the notice clock, financial posting, notifications and
+escalation. Without `start:worker` running, none of them ever runs. The
+budget never learns about an executed change, nobody is told anything, and a
+notice clock counts down to a deadline that arrives on no screen. Everything
+still *works* — a project manager can press "Check now" on the Contracts
+screen and the clocks advance — which is precisely why a deployment can run
+for a month without anybody noticing it is missing.
+
+It takes a Postgres advisory lock and exits cleanly if another instance holds
+it, so a supervisor may start as many as it likes. Its connection is **not**
+`plumbline_app`: every pass reads a cursor over a log spanning all tenants,
+which row-level security correctly refuses to the application role. Set
+`PLUMBLINE_WORKER_DATABASE_URL` to an owner connection, and note that this
+makes the worker the most privileged process in the system — which is why
+every pass re-establishes the tenant boundary in code, at each write, rather
+than trusting its own connection.
 
 The test suites need no database of their own: they boot an embedded Postgres and apply `db/migrations` from scratch, so a clean clone runs green with no setup. See `.env.example` for what a real deployment needs.
 

@@ -18,6 +18,7 @@
     "provision:app-role": "node scripts/provision-app-role.mjs",
     "seed:demo": "node scripts/seed-demo.mjs",
     "start": "npm run start -w @plumbline/api",
+    "start:worker": "npm run start:worker -w @plumbline/api",
     "eval:capture": "node eval/run.mjs",
     "dev:web": "npm run dev -w @plumbline/web"
   }
