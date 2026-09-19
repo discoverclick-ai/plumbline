@@ -247,16 +247,6 @@ export async function addParticipants(
   }
 }
 
-export async function removeParticipant(
-  db: Db,
-  input: { recordId: string; userId: string; role: ParticipantRole },
-): Promise<void> {
-  await db.query('DELETE FROM record_participants WHERE record_id = $1 AND user_id = $2 AND role = $3', [
-    input.recordId,
-    input.userId,
-    input.role,
-  ])
-}
 
 interface AssignmentRow {
   id: string
@@ -580,4 +570,40 @@ export async function ballInCourt(
     ageDays: r.age_days,
     overdue: r.overdue,
   }))
+}
+
+export interface DistributionDefault {
+  userId: string
+  role: ParticipantRole
+}
+
+/**
+ * The people a project copies on this kind of record by default.
+ *
+ * A NULL `type_key` means every type, so the owner's rep who reads the whole
+ * job is one row rather than one row per tool.
+ */
+export async function findDistributionDefaults(
+  db: Db,
+  input: { tenantId: string; projectId: string; typeKey: string },
+): Promise<DistributionDefault[]> {
+  const { rows } = await db.query<{ user_id: string; role: ParticipantRole }>(
+    `SELECT user_id, role
+       FROM project_distribution_defaults
+      WHERE tenant_id = $1 AND project_id = $2 AND (type_key = $3 OR type_key IS NULL)`,
+    [input.tenantId, input.projectId, input.typeKey],
+  )
+  return rows.map((r) => ({ userId: r.user_id, role: r.role }))
+}
+
+export async function removeParticipant(
+  db: Db,
+  input: { tenantId: string; recordId: string; userId: string; role: ParticipantRole },
+): Promise<number> {
+  const { rowCount } = await db.query(
+    `DELETE FROM record_participants
+      WHERE tenant_id = $1 AND record_id = $2 AND user_id = $3 AND role = $4`,
+    [input.tenantId, input.recordId, input.userId, input.role],
+  )
+  return rowCount ?? 0
 }

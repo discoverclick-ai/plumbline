@@ -1,7 +1,13 @@
 import { hashPassword } from './auth.js'
 import { withTenant, type Db } from './db.js'
 import { NotFoundError } from './errors.js'
-import type { OrganizationKind, PermissionLevel, PermissionScope, ProjectStage } from './types.js'
+import type {
+  OrganizationKind,
+  ParticipantRole,
+  PermissionLevel,
+  PermissionScope,
+  ProjectStage,
+} from './types.js'
 
 /**
  * Account bootstrap and directory writes.
@@ -346,6 +352,50 @@ export async function createUser(
     )
   }
   return row.id
+}
+
+/**
+ * Who this project copies on a kind of record by default.
+ *
+ * `typeKey` omitted means every type, which is the owner's rep who reads the
+ * whole job: one row rather than one per tool.
+ */
+export async function setDistributionDefault(
+  db: Db,
+  tenantId: string,
+  input: { projectId: string; userId: string; typeKey?: string; role?: ParticipantRole },
+): Promise<void> {
+  const role = input.role ?? 'distribution'
+  if (input.typeKey) {
+    await db.query(
+      `INSERT INTO project_distribution_defaults (tenant_id, project_id, type_key, user_id, role)
+            VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (project_id, type_key, user_id) WHERE type_key IS NOT NULL
+         DO UPDATE SET role = EXCLUDED.role`,
+      [tenantId, input.projectId, input.typeKey, input.userId, role],
+    )
+    return
+  }
+  await db.query(
+    `INSERT INTO project_distribution_defaults (tenant_id, project_id, type_key, user_id, role)
+          VALUES ($1, $2, NULL, $3, $4)
+     ON CONFLICT (project_id, user_id) WHERE type_key IS NULL
+       DO UPDATE SET role = EXCLUDED.role`,
+    [tenantId, input.projectId, input.userId, role],
+  )
+}
+
+export async function clearDistributionDefault(
+  db: Db,
+  tenantId: string,
+  input: { projectId: string; userId: string; typeKey?: string },
+): Promise<void> {
+  await db.query(
+    `DELETE FROM project_distribution_defaults
+      WHERE tenant_id = $1 AND project_id = $2 AND user_id = $3
+        AND type_key IS NOT DISTINCT FROM $4`,
+    [tenantId, input.projectId, input.userId, input.typeKey ?? null],
+  )
 }
 
 export async function createProject(

@@ -94,9 +94,22 @@ export class RecordKernel {
 
       // The creator is always a participant. Without that the workflow has
       // nobody to hand a returned record back to.
+      //
+      // The project's standing distribution comes last, so an explicit
+      // participant always wins: somebody named as the assignee on this
+      // record does not get demoted to a carbon copy because a default list
+      // mentions them. Dropping the defaults in at creation is the only way
+      // anybody gets copied without the person raising it at 6am on a phone
+      // remembering them, which is not a list, it is a guess.
+      const defaults = await repo.findDistributionDefaults(tx, {
+        tenantId: actor.tenantId,
+        projectId: input.projectId,
+        typeKey: type.key,
+      })
       const participants = dedupeParticipants([
         { userId: actor.userId, role: 'creator' as ParticipantRole, position: 0 },
         ...(input.participants ?? []),
+        ...defaults.map((d) => ({ userId: d.userId, role: d.role })),
       ])
       await assertParticipantsAreOnProject(tx, input.projectId, participants)
 
@@ -160,6 +173,81 @@ export class RecordKernel {
       })
 
       await appendAudit(tx, actor, 'record.create', 'record', record.id, { designation: record.designation })
+
+      return this.view(tx, access, type, record)
+    })
+  }
+
+  /**
+   * Change who is on a record after it exists.
+   *
+   * Guarded at `standard` on the type's tool rather than by a privilege of its
+   * own: deciding who sees a record is an ordinary part of working one, and a
+   * separate privilege nobody grants would just mean distributions never get
+   * corrected.
+   *
+   * The ball in court is NOT changed here. Moving the ball is what transitions
+   * are for, and letting an edit of the copy list silently reassign work would
+   * make the audit trail a fiction.
+   */
+  async setParticipants(
+    actor: Actor,
+    recordId: string,
+    changes: {
+      add?: { userId: string; role: ParticipantRole; position?: number }[]
+      remove?: { userId: string; role: ParticipantRole }[]
+    },
+  ): Promise<RecordView> {
+    return withTenant(this.db, actor.tenantId, async (tx) => {
+      const record = await repo.findRecord(tx, recordId)
+      if (!record) throw new NotFoundError('record', recordId)
+      const type = await getRecordType(tx, record.typeKey)
+      const access = await loadAccess(tx, {
+        userId: actor.userId,
+        tenantId: actor.tenantId,
+        projectId: record.projectId,
+      })
+      assertLevel(access, type.toolKey, 'standard')
+
+      const additions = dedupeParticipants(changes.add ?? [])
+      if (additions.length > 0) {
+        await assertParticipantsAreOnProject(tx, record.projectId, additions)
+        await repo.addParticipants(tx, {
+          tenantId: actor.tenantId,
+          recordId,
+          participants: additions,
+        })
+      }
+
+      for (const gone of changes.remove ?? []) {
+        // The holder cannot be removed out from under an open assignment,
+        // which would leave the record owed by somebody who is not on it.
+        if (gone.userId === record.ballInCourtUserId) {
+          throw new ValidationError('That person holds the ball on this record', [
+            { field: 'remove', message: 'Move the ball before removing its holder' },
+          ])
+        }
+        if (gone.role === 'creator') {
+          throw new ValidationError('A record keeps its creator', [
+            { field: 'remove', message: 'The creator cannot be removed' },
+          ])
+        }
+        await repo.removeParticipant(tx, { tenantId: actor.tenantId, recordId, ...gone })
+      }
+
+      await repo.appendEvent(tx, {
+        tenantId: actor.tenantId,
+        projectId: record.projectId,
+        recordId,
+        typeKey: type.key,
+        event: 'record.participants_changed',
+        payload: { added: changes.add ?? [], removed: changes.remove ?? [] },
+        actorUserId: actor.userId,
+      })
+      await appendAudit(tx, actor, 'record.participants', 'record', recordId, {
+        added: (changes.add ?? []).length,
+        removed: (changes.remove ?? []).length,
+      })
 
       return this.view(tx, access, type, record)
     })
