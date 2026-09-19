@@ -8,6 +8,7 @@ import { Budget } from './Budget.tsx'
 import { Contracts } from './Contracts.tsx'
 import { Lookahead } from './Lookahead.tsx'
 import { Chasing } from './Chasing.tsx'
+import { Drawings } from './Drawings.tsx'
 import { Photos } from './Photos.tsx'
 import { CaptureInbox } from './CaptureInbox.tsx'
 import { RecordDetail } from './RecordDetail.tsx'
@@ -129,7 +130,16 @@ export function Portfolio({ onOpenProject }: { onOpenProject: (project: ProjectV
   )
 }
 
-type ProjectTab = 'work' | 'records' | 'lookahead' | 'photos' | 'budget' | 'contracts' | 'chasing' | 'inbox'
+type ProjectTab =
+    | 'work'
+    | 'records'
+    | 'drawings'
+    | 'lookahead'
+    | 'photos'
+    | 'budget'
+    | 'contracts'
+    | 'chasing'
+    | 'inbox'
 
 export function ProjectShell({ project, onLeave }: { project: ProjectView; onLeave: () => void }) {
   const { scopeToProject, loading, level } = useSession()
@@ -151,6 +161,7 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
   ]
   // Most people on a job hold `none` here, and a tab that opens onto a
   // permission error is worse than no tab.
+  if (atLeast(level('drawings'), 'read_only')) tabs.push({ key: 'drawings', label: 'Drawings' })
   if (atLeast(level('schedule'), 'read_only')) tabs.push({ key: 'lookahead', label: 'Lookahead' })
   if (atLeast(level('photos'), 'read_only')) tabs.push({ key: 'photos', label: 'Photos' })
   if (atLeast(level('budget'), 'read_only')) tabs.push({ key: 'budget', label: 'Budget' })
@@ -213,6 +224,7 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
           {tab === 'records' && (
             <ToolLanding projectId={project.id} projectName={project.name} onOpenRecord={setOpenRecordId} />
           )}
+          {tab === 'drawings' && <Drawings projectId={project.id} projectName={project.name} />}
           {tab === 'lookahead' && <Lookahead projectId={project.id} projectName={project.name} />}
           {tab === 'photos' && <Photos projectId={project.id} projectName={project.name} />}
           {tab === 'chasing' && <Chasing projectId={project.id} projectName={project.name} />}

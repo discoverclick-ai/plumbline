@@ -292,6 +292,31 @@ export interface EscalationView {
   createdAt: string
 }
 
+export interface SheetView {
+  drawingId: string
+  number: string
+  title: string
+  discipline: string | null
+  revisionId: string
+  revisionLabel: string
+  sequence: number
+  setName: string
+  issuedOn: string
+  revisionCount: number
+}
+
+export interface PinView {
+  pinId: string
+  recordId: string
+  page: number
+  x: string
+  y: string
+  revisionId: string
+  revisionLabel: string
+  /** False when the pin was placed on an earlier revision of this sheet. */
+  onCurrentRevision: boolean
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -540,6 +565,28 @@ export class ApiClient {
 
   linkActivity(recordId: string, activityCode: string, kind = 'blocks'): Promise<{ ok: true }> {
     return this.request('POST', `/records/${recordId}/activities`, { activityCode, kind })
+  }
+
+  sheets(projectId: string, discipline?: string): Promise<{ sheets: SheetView[] }> {
+    const suffix = discipline ? `?discipline=${encodeURIComponent(discipline)}` : ''
+    return this.request('GET', `/projects/${projectId}/drawings${suffix}`)
+  }
+
+  pins(drawingId: string): Promise<{ pins: PinView[] }> {
+    return this.request('GET', `/drawings/${drawingId}/pins`)
+  }
+
+  placePin(revisionId: string, recordId: string, x: number, y: number, page = 1): Promise<unknown> {
+    return this.request('POST', `/drawing-revisions/${revisionId}/pins`, { recordId, x, y, page })
+  }
+
+  /** The sheet's own bytes, authenticated, for the renderer to consume. */
+  async sheetBytes(revisionId: string): Promise<ArrayBuffer> {
+    const response = await fetch(`${this.baseUrl}/drawing-revisions/${revisionId}/file`, {
+      headers: { ...(this.token ? { authorization: `Bearer ${this.token}` } : {}) },
+    })
+    if (!response.ok) throw new ApiError(response.status, 'sheet_failed', 'That sheet could not be loaded')
+    return response.arrayBuffer()
   }
 
   escalations(projectId: string): Promise<{ escalations: EscalationView[] }> {
