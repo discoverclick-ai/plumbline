@@ -1,8 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import {
   AnthropicInterpretationProvider,
+  AttachmentService,
   authenticate,
   CaptureService,
+  FilesystemBlobStore,
+  MAX_UPLOAD_BYTES,
   KernelError,
   loadAccess,
   loadRecordTypes,
@@ -11,6 +14,7 @@ import {
   signOut,
   withTenant,
   type Actor,
+  type BlobStore,
   type Db,
   type InterpretationProvider,
   type ParticipantRole,
@@ -38,6 +42,8 @@ interface Route {
   handler: (ctx: RequestContext) => Promise<unknown>
   /** Routes that run before a session exists. */
   public?: boolean
+  /** Routes whose request or response is bytes rather than JSON. */
+  binary?: boolean
 }
 
 interface RequestContext {
@@ -49,14 +55,16 @@ interface RequestContext {
   actor: Actor
   kernel: RecordKernel
   capture: CaptureService
+  attachments: AttachmentService
   db: Pool
+  res: ServerResponse
 }
 
 function route(
   method: string,
   path: string,
   handler: (ctx: RequestContext) => Promise<unknown>,
-  options: { public?: boolean } = {},
+  options: { public?: boolean; binary?: boolean } = {},
 ): Route {
   const pattern = new RegExp(
     `^${path.replace(/:[a-zA-Z]+/g, (m) => `(?<${m.slice(1)}>[^/]+)`).replace(/\//g, '\\/')}$`,
@@ -232,6 +240,68 @@ const ROUTES: Route[] = [
     }),
   ),
 
+  /**
+   * Upload. Raw bytes with the filename in a header rather than multipart,
+   * because multipart would mean a parser dependency for a form nobody is
+   * submitting: every client here is fetch with a File.
+   */
+  route(
+    'POST',
+    '/records/:recordId/attachments',
+    async ({ req, actor, params, attachments }) => {
+      const chunks: Buffer[] = []
+      let size = 0
+      for await (const chunk of req) {
+        size += (chunk as Buffer).length
+        if (size > MAX_UPLOAD_BYTES) {
+          throw new KernelError('payload_too_large', 'That file is too large', 413)
+        }
+        chunks.push(chunk as Buffer)
+      }
+      const filename = req.headers['x-filename']
+      if (typeof filename !== 'string' || filename.length === 0) {
+        throw new KernelError('bad_request', 'An x-filename header is required', 400)
+      }
+      return attachments.attach(actor, params['recordId'] as string, {
+        // Never trusted for anything but display: it is decoded so a client
+        // can send a name with a space or an accent in it, and it never
+        // touches a path, because the storage key is ours and random.
+        filename: decodeURIComponent(filename),
+        contentType: (req.headers['content-type'] ?? 'application/octet-stream').split(';')[0] as string,
+        bytes: Buffer.concat(chunks),
+      })
+    },
+    { binary: true },
+  ),
+
+  route('GET', '/records/:recordId/attachments', async ({ actor, params, attachments }) => ({
+    attachments: await attachments.list(actor, params['recordId'] as string),
+  })),
+
+  /**
+   * Download. No signed URL and no public path: every byte leaves through
+   * here, after the reader's own access has been loaded, because a link that
+   * works for anybody holding it is not a permission model.
+   */
+  route(
+    'GET',
+    '/attachments/:attachmentId',
+    async ({ actor, params, attachments, res }) => {
+      const { attachment, bytes } = await attachments.read(actor, params['attachmentId'] as string)
+      res.writeHead(200, {
+        'content-type': attachment.contentType,
+        'content-length': bytes.byteLength,
+        // attachment, always. An HTML or SVG file rendered inline would run
+        // in this origin, and every party on the job can upload.
+        'content-disposition': `attachment; filename="${attachment.filename.replace(/["\\]/g, '')}"`,
+        'x-content-type-options': 'nosniff',
+      })
+      res.end(bytes)
+      return undefined
+    },
+    { binary: true },
+  ),
+
   route('POST', '/records/:recordId/comments', async ({ kernel, actor, params, body }) =>
     kernel.comment(actor, params['recordId'] as string, String(body['body'] ?? '')),
   ),
@@ -362,10 +432,25 @@ export interface ApiServerOptions {
    * model key to boot.
    */
   interpretationProvider?: InterpretationProvider
+  /**
+   * Where attachments live. Defaults to a directory on this machine, which is
+   * the right answer for a single-server install and for plenty of
+   * contractors who will never want their drawings leaving the building.
+   */
+  blobStore?: BlobStore
 }
 
 export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Server {
   const kernel = new RecordKernel(pool as Db)
+
+  let attachmentService: AttachmentService | null = null
+  const attachments = (): AttachmentService => {
+    attachmentService ??= new AttachmentService(
+      pool as Db,
+      options.blobStore ?? new FilesystemBlobStore(process.env['PLUMBLINE_BLOB_ROOT'] ?? './.blobs'),
+    )
+    return attachmentService
+  }
 
   let captureService: CaptureService | null = null
   const capture = (): CaptureService => {
@@ -390,7 +475,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           return
         }
 
-        const body = await readBody(req)
+        const body = match.r.binary ? {} : await readBody(req)
         const params = match.m.groups ?? {}
 
         let identity: SessionIdentity = { sessionId: '', tenantId: '', userId: '' }
@@ -412,8 +497,13 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           actor: { tenantId: identity.tenantId, userId: identity.userId },
           kernel,
           capture: capture(),
+          attachments: attachments(),
           db: pool,
+          res,
         })
+
+        // A download has already written the response itself.
+        if (res.writableEnded) return
 
         const created =
           req.method === 'POST' && (url.pathname.endsWith('/records') || url.pathname.endsWith('/captures'))

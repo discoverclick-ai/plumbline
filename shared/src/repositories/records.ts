@@ -607,3 +607,94 @@ export async function removeParticipant(
   )
   return rowCount ?? 0
 }
+
+export interface AttachmentRow {
+  id: string
+  recordId: string
+  filename: string
+  contentType: string
+  byteSize: number
+  uploadedBy: string
+  createdAt: Date
+}
+
+const ATTACHMENT_COLUMNS = `id, record_id, filename, content_type, byte_size, uploaded_by, created_at`
+
+function toAttachment(row: {
+  id: string
+  record_id: string
+  filename: string
+  content_type: string
+  byte_size: string | number
+  uploaded_by: string
+  created_at: Date
+}): AttachmentRow {
+  return {
+    id: row.id,
+    recordId: row.record_id,
+    filename: row.filename,
+    contentType: row.content_type,
+    byteSize: Number(row.byte_size),
+    uploadedBy: row.uploaded_by,
+    createdAt: row.created_at,
+  }
+}
+
+export async function insertAttachment(
+  db: Db,
+  input: {
+    tenantId: string
+    recordId: string
+    filename: string
+    contentType: string
+    byteSize: number
+    storageKey: string
+    uploadedBy: string
+  },
+): Promise<AttachmentRow> {
+  const { rows } = await db.query(
+    `INSERT INTO record_attachments (tenant_id, record_id, filename, content_type, byte_size, storage_key, uploaded_by)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING ${ATTACHMENT_COLUMNS}`,
+    [
+      input.tenantId,
+      input.recordId,
+      input.filename,
+      input.contentType,
+      input.byteSize,
+      input.storageKey,
+      input.uploadedBy,
+    ],
+  )
+  const row = rows[0]
+  if (!row) throw new Error('attachment insert returned no row')
+  return toAttachment(row as never)
+}
+
+export async function listAttachments(
+  db: Db,
+  input: { tenantId: string; recordId: string },
+): Promise<AttachmentRow[]> {
+  const { rows } = await db.query(
+    `SELECT ${ATTACHMENT_COLUMNS} FROM record_attachments
+      WHERE tenant_id = $1 AND record_id = $2
+      ORDER BY created_at`,
+    [input.tenantId, input.recordId],
+  )
+  return rows.map((r) => toAttachment(r as never))
+}
+
+/** The storage key never leaves this layer: callers get the row, not the path. */
+export async function findAttachment(
+  db: Db,
+  input: { tenantId: string; attachmentId: string },
+): Promise<{ attachment: AttachmentRow; storageKey: string } | null> {
+  const { rows } = await db.query(
+    `SELECT ${ATTACHMENT_COLUMNS}, storage_key FROM record_attachments
+      WHERE tenant_id = $1 AND id = $2`,
+    [input.tenantId, input.attachmentId],
+  )
+  const row = rows[0] as ({ storage_key: string } & Record<string, never>) | undefined
+  if (!row) return null
+  return { attachment: toAttachment(row as never), storageKey: row.storage_key }
+}
