@@ -105,6 +105,41 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Money arrives as strings and stays that way until it is formatted.
+ *
+ * Parsing it into a JavaScript number to render it is the one line that would
+ * undo the care taken in the database: 0.1 is not representable, and a budget
+ * that is a cent out is a budget somebody stops trusting.
+ */
+export interface BudgetLineView {
+  budgetLineId: string
+  budgetCodeId: string
+  budgetCode: string
+  description: string
+  originalAmount: string
+  approvedRevisions: string
+  currentBudget: string
+  committedCost: string
+  actualCost: string
+  pendingCost: string
+  projectedCost: string
+  projectedOverUnder: string
+}
+
+export interface CommitmentView {
+  commitmentId: string
+  kind: 'subcontract' | 'purchase_order'
+  number: string
+  title: string
+  status: 'draft' | 'out_for_signature' | 'executed' | 'closed' | 'void'
+  vendorOrgId: string
+  retainagePercent: string
+  originalValue: string
+  executedChanges: string
+  currentValue: string
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -224,6 +259,14 @@ export class ApiClient {
     input: { kind: CaptureView['kind']; text?: string; storageKey?: string; contentType?: string },
   ): Promise<CaptureView> {
     return this.request('POST', `/projects/${projectId}/captures`, input)
+  }
+
+  budget(projectId: string): Promise<{ lines: BudgetLineView[] }> {
+    return this.request('GET', `/projects/${projectId}/budget`)
+  }
+
+  commitments(projectId: string): Promise<{ commitments: CommitmentView[] }> {
+    return this.request('GET', `/projects/${projectId}/commitments`)
   }
 
   getCapture(captureId: string): Promise<CaptureView> {
