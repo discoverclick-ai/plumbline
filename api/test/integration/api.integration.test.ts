@@ -553,3 +553,72 @@ describe('drawings, over HTTP', () => {
     expect(file.bytes.equals(sheet)).toBe(true)
   })
 })
+
+describe('the MCP surface over the wire', () => {
+  it('will not describe its tools to an anonymous caller', async () => {
+    // Tool discovery reads like public metadata and is not: the list names
+    // record types, and the record types are the customer's operation.
+    expect((await call('GET', '/mcp/tools')).status).toBe(401)
+    expect((await call('POST', '/mcp/call', { body: { name: 'list_record_types' } })).status).toBe(401)
+  })
+
+  it('lists tools, and marks which ones write', async () => {
+    const res = await call('GET', '/mcp/tools', { token: pmToken })
+    expect(res.status).toBe(200)
+
+    const names = res.body.tools.map((t: { name: string }) => t.name)
+    expect(names).toContain('ball_in_court')
+    expect(names).toContain('transition_record')
+
+    const writes = res.body.tools.filter((t: { mutating: boolean }) => t.mutating).map((t: { name: string }) => t.name)
+    // A client shows this before it approves a call, so it has to be right.
+    expect(writes).toEqual(['create_record', 'transition_record', 'comment_on_record'])
+  })
+
+  it('drives the workflow end to end as the signed-in person', async () => {
+    const created = await call('POST', '/mcp/call', {
+      token: pmToken,
+      body: {
+        name: 'create_record',
+        arguments: {
+          projectId,
+          typeKey: 'rfi',
+          title: 'Raised by an agent',
+          body: { question: 'Which detail governs at the canopy?', discipline: 'Architectural' },
+          assigneeUserId: architectUserId,
+        },
+      },
+    })
+    expect(created.status).toBe(200)
+    const recordId = created.body.result.record.id
+
+    const read = await call('POST', '/mcp/call', {
+      token: pmToken,
+      body: { name: 'get_record', arguments: { recordId } },
+    })
+    expect(read.body.result.record.id).toBe(recordId)
+    expect(read.body.result.availableTransitions.length).toBeGreaterThan(0)
+
+    const moved = await call('POST', '/mcp/call', {
+      token: pmToken,
+      body: {
+        name: 'transition_record',
+        arguments: { recordId, transitionKey: read.body.result.availableTransitions[0].key },
+      },
+    })
+    expect(moved.status).toBe(200)
+    expect(moved.body.result.assignment.holderUserId).toBe(architectUserId)
+  })
+
+  it('returns a refusal as a refusal, not a 500', async () => {
+    const bogus = await call('POST', '/mcp/call', { token: pmToken, body: { name: 'drop_everything' } })
+    expect(bogus.status).toBe(400)
+    expect(bogus.body.error).toBe('unknown_tool')
+
+    const missing = await call('POST', '/mcp/call', {
+      token: pmToken,
+      body: { name: 'get_record', arguments: {} },
+    })
+    expect(missing.status).toBe(400)
+  })
+})

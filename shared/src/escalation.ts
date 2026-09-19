@@ -1,6 +1,7 @@
 import { withTenant, type Db } from './db.js'
-import { NotFoundError, ValidationError } from './errors.js'
+import { NotFoundError, PermissionDeniedError, ValidationError } from './errors.js'
 import type { Actor } from './kernel.js'
+import { loadAccess } from './repositories/permissions.js'
 
 /**
  * Chasing.
@@ -88,6 +89,27 @@ export function audienceFor(item: OverdueItem, level: EscalationRule['level']): 
   return item.creatorId ?? item.holderId
 }
 
+/**
+ * You have to be on the job to hear about it.
+ *
+ * Row-level security stops a tenant reading another tenant's work, and it is
+ * the only boundary these queries had. Inside one tenant it says nothing about
+ * projects, so a plain tenant-scoped SELECT hands a trade partner on the
+ * parking structure every overdue item on the hospital: designation, title,
+ * who is sitting on it. Harmless while the only caller was a worker sweeping
+ * on a schedule, which is how it got written; not harmless the moment somebody
+ * else's agent can call it with a project id it guessed.
+ */
+async function assertOnProject(db: Db, actor: Actor, projectId: string): Promise<void> {
+  const { rows } = await db.query('SELECT 1 FROM projects WHERE id = $1', [projectId])
+  if (rows.length === 0) throw new NotFoundError('project', projectId)
+
+  const access = await loadAccess(db, { userId: actor.userId, tenantId: actor.tenantId, projectId })
+  if (!access.isProjectMember && !access.isCompanyAdmin) {
+    throw new PermissionDeniedError('You are not on this project')
+  }
+}
+
 export class EscalationService {
   constructor(
     private readonly db: Db,
@@ -97,6 +119,7 @@ export class EscalationService {
   /** Everything owed on a project, with how late it is. */
   async overdue(actor: Actor, projectId: string): Promise<OverdueItem[]> {
     return withTenant(this.db, actor.tenantId, async (tx) => {
+      await assertOnProject(tx, actor, projectId)
       const { rows } = await tx.query<Record<string, unknown>>(
         `SELECT r.id AS record_id, r.project_id, a.id AS assignment_id, r.designation, r.title, r.type_key,
                 a.expected_action, a.holder_user_id, u.name AS holder_name, a.due_at,
@@ -213,6 +236,7 @@ export class EscalationService {
     { id: string; recordId: string; level: string; reason: string; message: string; notifiedId: string }[]
   > {
     return withTenant(this.db, actor.tenantId, async (tx) => {
+      await assertOnProject(tx, actor, projectId)
       const { rows } = await tx.query<Record<string, string>>(
         `SELECT id, record_id, level, reason, drafted_message, notified_id
            FROM escalations

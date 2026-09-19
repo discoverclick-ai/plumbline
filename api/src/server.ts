@@ -5,6 +5,8 @@ import {
   authenticate,
   DrawingService,
   EscalationService,
+  McpToolRunner,
+  TOOLS,
   SyncService,
   BudgetService,
   buildErpBatch,
@@ -68,6 +70,7 @@ interface RequestContext {
   drawings: DrawingService
   sync: SyncService
   escalations: EscalationService
+  mcp: McpToolRunner
   commitments: CommitmentService
   invoicing: InvoicingService
   db: Pool
@@ -703,6 +706,23 @@ const ROUTES: Route[] = [
     escalations.sweep(actor, params['projectId'] as string),
   ),
 
+  /**
+   * The kernel as tools, for somebody else's agent.
+   *
+   * No separate auth and no service account: the same bearer token the web
+   * client sends, resolved to the same person, carrying the same access
+   * snapshot. An agent is a client, not a role, which is the only version of
+   * this that does not need its own permission model to go wrong separately.
+   */
+  route('GET', '/mcp/tools', async () => ({ tools: TOOLS })),
+
+  route('POST', '/mcp/call', async ({ actor, body, mcp }) => ({
+    result: await mcp.call(actor, {
+      name: String(body['name'] ?? ''),
+      arguments: (body['arguments'] ?? {}) as Record<string, unknown>,
+    }),
+  })),
+
   route('POST', '/escalations/:escalationId/approve', async ({ actor, params, escalations }) => {
     await escalations.approve(actor, params['escalationId'] as string)
     return { ok: true }
@@ -785,6 +805,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
   const budgetService = new BudgetService(pool as Db)
   const syncService = new SyncService(pool as Db)
   const escalationService = new EscalationService(pool as Db)
+  const mcpRunner = new McpToolRunner(pool as Db)
   const commitmentService = new CommitmentService(pool as Db)
   const invoicingService = new InvoicingService(pool as Db)
 
@@ -858,6 +879,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           drawings: drawingService(),
           sync: syncService,
           escalations: escalationService,
+          mcp: mcpRunner,
           commitments: commitmentService,
           invoicing: invoicingService,
           db: pool,
