@@ -3,6 +3,7 @@ import {
   AnthropicInterpretationProvider,
   AttachmentService,
   authenticate,
+  DrawingService,
   BudgetService,
   buildErpBatch,
   CommitmentService,
@@ -62,6 +63,7 @@ interface RequestContext {
   capture: CaptureService
   attachments: AttachmentService
   budget: BudgetService
+  drawings: DrawingService
   commitments: CommitmentService
   invoicing: InvoicingService
   db: Pool
@@ -574,6 +576,91 @@ const ROUTES: Route[] = [
     { binary: true },
   ),
 
+  route('GET', '/projects/:projectId/drawings', async ({ actor, params, query, drawings }) => ({
+    sheets: await drawings.currentSheets(
+      actor,
+      params['projectId'] as string,
+      query.get('discipline') ?? undefined,
+    ),
+  })),
+
+  route('POST', '/projects/:projectId/drawing-sets', async ({ actor, params, body, drawings }) =>
+    drawings.createSet(actor, {
+      projectId: params['projectId'] as string,
+      name: String(body['name'] ?? ''),
+      issuedOn: String(body['issuedOn'] ?? ''),
+      ...(body['receivedOn'] ? { receivedOn: String(body['receivedOn']) } : {}),
+    }),
+  ),
+
+  route(
+    'POST',
+    '/drawing-sets/:setId/sheets',
+    async ({ req, actor, params, drawings }) => {
+      const chunks: Buffer[] = []
+      let size = 0
+      for await (const chunk of req) {
+        size += (chunk as Buffer).length
+        if (size > MAX_UPLOAD_BYTES) throw new KernelError('payload_too_large', 'That sheet is too large', 413)
+        chunks.push(chunk as Buffer)
+      }
+      const header = (name: string): string => {
+        const value = req.headers[name]
+        return typeof value === 'string' ? decodeURIComponent(value) : ''
+      }
+      if (!header('x-sheet-number')) {
+        throw new KernelError('bad_request', 'An x-sheet-number header is required', 400)
+      }
+      return drawings.addRevision(actor, {
+        setId: params['setId'] as string,
+        number: header('x-sheet-number'),
+        title: header('x-sheet-title'),
+        ...(header('x-discipline') ? { discipline: header('x-discipline') } : {}),
+        revisionLabel: header('x-revision') || '0',
+        filename: header('x-filename') || `${header('x-sheet-number')}.pdf`,
+        contentType: (req.headers['content-type'] ?? 'application/octet-stream').split(';')[0] as string,
+        bytes: Buffer.concat(chunks),
+      })
+    },
+    { binary: true },
+  ),
+
+  route('POST', '/drawing-sets/:setId/publish', async ({ actor, params, drawings }) => {
+    await drawings.publishSet(actor, params['setId'] as string)
+    return { ok: true }
+  }),
+
+  route('GET', '/drawings/:drawingId/pins', async ({ actor, params, drawings }) => ({
+    pins: await drawings.pinsFor(actor, params['drawingId'] as string),
+  })),
+
+  route('POST', '/drawing-revisions/:revisionId/pins', async ({ actor, params, body, drawings }) =>
+    drawings.pin(actor, {
+      revisionId: params['revisionId'] as string,
+      recordId: String(body['recordId'] ?? ''),
+      ...(body['page'] ? { page: Number(body['page']) } : {}),
+      x: Number(body['x']),
+      y: Number(body['y']),
+    }),
+  ),
+
+  route(
+    'GET',
+    '/drawing-revisions/:revisionId/file',
+    async ({ actor, params, drawings, res }) => {
+      const sheet = await drawings.sheetBytes(actor, params['revisionId'] as string)
+      res.writeHead(200, {
+        'content-type': sheet.contentType,
+        'content-length': sheet.bytes.byteLength,
+        'content-disposition': `attachment; filename="${sheet.number.replace(/["\\]/g, '')}.pdf"`,
+        'x-content-type-options': 'nosniff',
+      })
+      res.end(sheet.bytes)
+      return undefined
+    },
+    { binary: true },
+  ),
+
   route('GET', '/ball-in-court', async ({ kernel, actor, query }) => {
     const entries = await kernel.ballInCourt(actor, {
       ...(query.get('projectId') ? { projectId: query.get('projectId') as string } : {}),
@@ -647,12 +734,23 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
   const commitmentService = new CommitmentService(pool as Db)
   const invoicingService = new InvoicingService(pool as Db)
 
+  let drawings: DrawingService | null = null
+  const drawingService = (): DrawingService => {
+    drawings ??= new DrawingService(pool as Db, blobStore())
+    return drawings
+  }
+
+  let store: BlobStore | null = null
+  const blobStore = (): BlobStore => {
+    // One store for attachments and drawings both. Two roots would mean two
+    // places a file can be, and one of them is always the wrong one.
+    store ??= options.blobStore ?? new FilesystemBlobStore(process.env['PLUMBLINE_BLOB_ROOT'] ?? './.blobs')
+    return store
+  }
+
   let attachmentService: AttachmentService | null = null
   const attachments = (): AttachmentService => {
-    attachmentService ??= new AttachmentService(
-      pool as Db,
-      options.blobStore ?? new FilesystemBlobStore(process.env['PLUMBLINE_BLOB_ROOT'] ?? './.blobs'),
-    )
+    attachmentService ??= new AttachmentService(pool as Db, blobStore())
     return attachmentService
   }
 
@@ -703,6 +801,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           capture: capture(),
           attachments: attachments(),
           budget: budgetService,
+          drawings: drawingService(),
           commitments: commitmentService,
           invoicing: invoicingService,
           db: pool,

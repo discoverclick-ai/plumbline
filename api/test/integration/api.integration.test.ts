@@ -496,3 +496,60 @@ describe('the accounting export', () => {
     expect(refused.status).toBe(403)
   })
 })
+
+describe('drawings, over HTTP', () => {
+  it('issues a set, publishes it, and pins a record to the sheet', async () => {
+    const set = await call('POST', `/projects/${projectId}/drawing-sets`, {
+      token: pmToken,
+      body: { name: 'API set', issuedOn: '2026-05-04' },
+    })
+    expect(set.status).toBe(200)
+
+    const sheet = Buffer.from('%PDF-1.7 api sheet')
+    const upload = await raw('POST', `/drawing-sets/${set.body.id}/sheets`, {
+      token: pmToken,
+      contentType: 'application/pdf',
+      headers: {
+        'x-sheet-number': 'S-401',
+        'x-sheet-title': encodeURIComponent('Typical details'),
+        'x-revision': '0',
+      },
+      body: sheet,
+    })
+    expect(upload.status).toBe(200)
+
+    // Nothing is current until the set is published, because a crew building
+    // from a check set is the accident the tool exists to prevent.
+    const beforePublish = await call('GET', `/projects/${projectId}/drawings`, { token: pmToken })
+    expect(beforePublish.body.sheets).toHaveLength(0)
+
+    const published = await call('POST', `/drawing-sets/${set.body.id}/publish`, { token: pmToken, body: {} })
+    expect(published.status).toBe(200)
+
+    const current = await call('GET', `/projects/${projectId}/drawings`, { token: pmToken })
+    expect(current.body.sheets[0].number).toBe('S-401')
+    expect(current.body.sheets[0].revisionLabel).toBe('0')
+
+    const record = await call('POST', `/projects/${projectId}/records`, {
+      token: pmToken,
+      body: {
+        typeKey: 'rfi',
+        title: 'Pinned to the sheet',
+        body: { question: 'Which detail governs?', discipline: 'Structural' },
+      },
+    })
+    const pin = await call('POST', `/drawing-revisions/${current.body.sheets[0].revisionId}/pins`, {
+      token: pmToken,
+      body: { recordId: record.body.record.id, x: 0.25, y: 0.5 },
+    })
+    expect(pin.status).toBe(200)
+
+    const pins = await call('GET', `/drawings/${current.body.sheets[0].drawingId}/pins`, { token: pmToken })
+    expect(pins.body.pins[0].recordId).toBe(record.body.record.id)
+    expect(pins.body.pins[0].onCurrentRevision).toBe(true)
+
+    const file = await raw('GET', `/drawing-revisions/${current.body.sheets[0].revisionId}/file`, { token: pmToken })
+    expect(file.headers['content-type']).toBe('application/pdf')
+    expect(file.bytes.equals(sheet)).toBe(true)
+  })
+})
