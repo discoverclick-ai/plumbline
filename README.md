@@ -4,7 +4,7 @@ A construction management platform, built on one record kernel instead of two do
 
 The research this is built from is in [`docs/procore-teardown.md`](docs/procore-teardown.md): a teardown of Procore, read from its shipping design system and its own documentation, and the architecture blueprint that came out of it. This repository is that blueprint, built.
 
-What gets built next is specified in [`docs/specs/`](docs/specs/), starting with [contract intelligence and the notice clock](docs/specs/contract-intelligence.md): the contract's own deadlines, extracted with citations, running as live clocks against the record kernel.
+The specs are in [`docs/specs/`](docs/specs/). [Contract intelligence and the notice clock](docs/specs/contract-intelligence.md) — the contract's own deadlines, extracted with citations, running as live clocks against the record kernel — is specified there and now built.
 
 ## The bet
 
@@ -12,13 +12,13 @@ Every tool in the product is the same table. An RFI, a submittal, a punch item, 
 
 Two consequences, and they are the whole reason for the design.
 
-A new tool is a configuration change rather than a quarter of engineering. Procore built roughly twenty-four tools by hand over fifteen years; the five shipped here cost one migration between them.
+A new tool is a configuration change rather than a quarter of engineering. Procore built roughly twenty-four tools by hand over fifteen years. There are thirteen record types here across twenty-seven permissioned tools, and every one of the record types is a row of JSON in a migration: no screen, no service, no handler.
 
 More importantly, an agent that can read, propose and transition a `record` can work every tool the product will ever have, including ones shipped after the agent was written. That is the thing a platform designed in 2012 cannot retrofit, and it is where this is meant to win.
 
 ## What runs today
 
-Five record types, configured not coded: RFI, Submittal, Punch Item, Observation, Daily Log.
+**Thirteen record types, configured not coded**: RFI, submittal, punch item, observation, daily log, T&M ticket, change event, correspondence, meeting, task, incident, inspection and notice. Each is a JSON definition — fields, states, who holds the ball in each state, and what permission every transition demands — and nothing else.
 
 **Ball in court** as a first-class assignment, not a status field. Every open handoff has a holder, an expected action, a due time and a full history, so "who is blocking what, and for how long" is a join rather than a nightly report. `GET /ball-in-court` with no parameters is a field user's home screen.
 
@@ -43,6 +43,24 @@ The prompt is generated from the record type registry, so a tool added by a migr
 Grounding is confined by the same row-level security as a human. The type registry, the project roster and the capture are all read inside the approving user's tenant context, so the model cannot be grounded in data the people involved could not see. That is a property of the transaction, not an instruction in the prompt.
 
 Every model call is costed per tenant at the time it ran, and every accepted proposal records whether the human had to edit it first. `acceptedUnedited / accepted` is the quality metric for the pipeline: an agent whose drafts always need fixing is costing the field time, not saving it.
+
+**The financial spine.** A budget code built from named WBS segments, budget lines with revisions, commitments with their own change orders, cost entries, and the pay application cycle from draft through approval to paid. Every figure on a screen is computed by a database view; the client does no arithmetic at all, and money stays a string end to end because a budget a cent out is a budget somebody stops trusting.
+
+**The schedule, and the join nobody makes.** Primavera P6 `.xer` import, kept as versions rather than overwritten, with float stored exactly as the scheduler computed it. Records link to an activity CODE, so the link survives Monday's reimport. The payoff is one query: what starts this week, what is blocking it, and who has been sitting on it — and the same fact goes into the chase message, which is the difference between "RFI-014 is six days overdue" and "…and steel erection starts Thursday with two days of float".
+
+**Contract intelligence and the notice clock.** Contracts segmented into citable clauses, obligations extracted behind a quote gate that DISCARDS any row whose citation is not verbatim in its clause, and deadlines computed by arithmetic no model touches — showing every day counted and every day skipped. A clock is a record in draft with a due date, so ball in court, escalation and the audit trail all come along free. Plus the claim file: the clause, the geotagged evidence, the notice with its delivery proof and the float it consumed, assembled continuously and leading with what is MISSING.
+
+**Statutory deadlines** — lien and bond windows — on the same engine, where a rule nobody has verified against the statute starts no clocks and the product ships with every rule unverified.
+
+**Drawings, photographs and specifications.** Sheets rendered with pins that survive a revision, photographs stored with the EXIF intact because a site photograph with no timestamp is an illustration rather than evidence, and the submittal register read out of the spec book with the clause under every line.
+
+**Offline sync** with a real three-way merge, and a screen that shows the words the field typed and the server could not keep — never that something was lost without showing what it was.
+
+**Chasing**, escalation drafted and not sent, with the schedule consequence in the message.
+
+**An MCP server** over the same kernel, speaking JSON-RPC on stdin and stdout, running as a person's own session with no service account anywhere in the path.
+
+**A Procore importer**, because the thing that decides whether anybody can leave the incumbent is whether their data can.
 
 **The web client.** Three page templates and twelve components, not a design system. There is no RFI screen in the codebase: the tabs are record types from the registry, the forms are the type's own fields, and the action bar is `availableTransitions` — what the server says *this* person may run. A test proves it the only way that means anything, by inserting a record type the client has never heard of and driving it through the same screens.
 
@@ -148,6 +166,41 @@ GET    /projects/:id/proposals    the approval inbox
 POST   /proposals/:id/accept      THE GATE: creates the record as you
 POST   /proposals/:id/reject
 GET    /projects/:id/capture-stats
+
+POST   /projects                  start a job; puts you on it
+GET    /companies  POST /companies
+GET    /people     POST /people
+POST   /projects/:id/members
+GET    /permission-templates      ?scope=project
+
+GET    /projects/:id/budget       every figure computed by a view
+GET    /projects/:id/commitments
+GET    /commitments/:id/invoices  the pay application cycle
+POST   /invoices/:id/{submit,approve,lien-waiver,pay}
+
+GET    /projects/:id/lookahead    ?weeks=3
+GET    /projects/:id/exposure     what is in the way, and who has it
+POST   /projects/:id/schedules    a P6 .xer; every import is kept
+POST   /records/:id/activities    the link that survives Monday's reimport
+
+POST   /projects/:id/contracts    an instrument
+POST   /contracts/:id/segment     into citable clauses, deterministically
+POST   /contracts/:id/profile     screen, then extract, behind the quote gate
+POST   /obligations/:id/accept    THE GATE: nothing starts a clock until this
+GET    /projects/:id/clocks
+POST   /clocks/:id/draft-notice   drafts into the record and stops
+GET    /clocks/:id/claim-file.md  leads with what is missing
+PUT    /projects/:id/statutory-facts
+
+GET    /projects/:id/drawings     current sheets only
+POST   /drawing-sets/:id/sheets   nothing is current until published
+GET    /projects/:id/photos       EXIF intact
+GET    /projects/:id/submittal-register
+GET    /projects/:id/escalations  drafted, never sent
+GET    /projects/:id/sync-conflicts
+
+GET    /mcp/tools  POST /mcp/call
+POST   /projects/:id/imports/procore/rfis
 ```
 
 **The eval harness.** The interpreter is the one place in the product where a model decides something, so it has a number attached. 24 cases covering every record type plus the failures that matter — hallucination probes, an injection attempt, an observation/punch boundary, captures with nothing usable in them — graded programmatically on five metrics that trade against each other, so a prompt change that lifts field recall by inventing values shows up as `no_invention` falling.
@@ -164,9 +217,13 @@ Every screen renders from two server responses and hard-codes neither: the recor
 
 ## What is deliberately not here yet
 
-In blueprint order: the entity graph and scoped retrieval, the financial spine (a configurable budget code of named segments), and offline predictive sync.
+**A verified statutory dataset.** The lien and bond engine ships with two federal rules and both are marked unverified, so neither starts a clock. Seeding fifty states of lien law from memory would be the single most dangerous thing this repository could contain: fifty confident numbers, each one relied upon, none checked. Buying or commissioning a verified dataset is an `INSERT`, and the schema is built for exactly that.
 
-One gap inside the capture pipeline: transcription and OCR are not wired. A capture arrives with its `text` already extracted, and the step that turns audio and pixels into text is a separate provider call in front of the interpreter.
+**A native mobile client.** The offline sync protocol, the device registry and the three-way merge are all here and tested; the thing that speaks them from a phone is not.
+
+**Transcription and OCR.** A capture arrives with its `text` already extracted. The step that turns audio and pixels into text is a separate provider call in front of the interpreter, and it is not wired.
+
+**An eval baseline against a real model.** The harness, the corpus and the regression gate exist and run against a scripted provider. The numbers that matter need an API key.
 
 ## Adding a tool
 
