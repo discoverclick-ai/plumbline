@@ -237,3 +237,40 @@ describe('the pay application cycle', () => {
     }
   })
 })
+
+describe('putting a budget together', () => {
+  it('builds a cost code and a line against it, without leaving the budget', async () => {
+    renderAsUser(harness, pmToken, <Budget projectId={project.projectId} projectName={project.projectName} />)
+    await screen.findByText('26 00 00.S')
+
+    // Cost codes get invented while somebody is looking at the budget and
+    // finds the one they need missing. Sending them to another screen is how
+    // people end up with "MISC" for everything.
+    await userEvent.click(screen.getByRole('button', { name: 'Add a line' }))
+    expect(await screen.findByText(/A budget line needs a cost code/)).toBeInTheDocument()
+
+    // The segment values arrive after the panel does, so wait for the
+    // option rather than for the select.
+    // Found by its own label rather than by position: the page has several
+    // comboboxes and the one that matters is the Cost Code segment.
+    const costCode = await screen.findByRole('combobox', { name: /Cost Code/ })
+    await screen.findByRole('option', { name: /26 00 00 — Electrical/ })
+    await userEvent.selectOptions(costCode, '26 00 00')
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /Cost Type/ }), 'S')
+    await userEvent.click(screen.getByRole('button', { name: 'Make the code' }))
+
+    // The code lands in the picker below, which is what makes a line
+    // possible: the two halves are one panel because a cost code is invented
+    // in the middle of writing the line that needed it.
+    await waitFor(() => expect(screen.getAllByRole('option', { name: /26 00 00/ }).length).toBeGreaterThan(1))
+  })
+
+  it('offers nothing to somebody who may not see what things cost', async () => {
+    renderAsUser(harness, superToken, <Budget projectId={project.projectId} projectName={project.projectName} />)
+    await screen.findByText('26 00 00.S')
+
+    // Somebody who may see the scope and not the money has no business
+    // setting the money.
+    expect(screen.queryByRole('button', { name: 'Add a line' })).not.toBeInTheDocument()
+  })
+})

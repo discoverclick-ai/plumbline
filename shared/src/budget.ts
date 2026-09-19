@@ -78,6 +78,27 @@ async function assertCanManage(tx: Db, actor: Actor, projectId: string): Promise
 export class BudgetService {
   constructor(private readonly db: Db) {}
 
+  /**
+   * Whether this actor may invent a cost code.
+   *
+   * Exposed because the WBS functions themselves are primitives with no
+   * permission checks, and a cost code is part of the financial structure:
+   * anybody who can invent one can make the budget say whatever they like.
+   * The check belongs with the budget, so it lives here rather than being
+   * written out again at the route.
+   */
+  async assertCanManageCodes(actor: Actor, projectId: string): Promise<void> {
+    await withTenant(this.db, actor.tenantId, async (tx) => {
+      const access = await loadAccess(tx, { userId: actor.userId, tenantId: actor.tenantId, projectId })
+      if (!hasPrivilege(access, 'budget', 'manage_codes') && !access.isCompanyAdmin) {
+        throw new PermissionDeniedError('You cannot manage cost codes on this project', {
+          tool: 'budget',
+          privilege: 'manage_codes',
+        })
+      }
+    })
+  }
+
   async addLine(
     actor: Actor,
     input: {

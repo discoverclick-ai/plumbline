@@ -2,6 +2,11 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import {
   AnthropicInterpretationProvider,
   AdministrationService,
+  addSegmentValue,
+  createBudgetCode,
+  listBudgetCodes,
+  listSegments,
+  listSegmentValues,
   AnthropicNoticeDrafter,
   AnthropicObligationExtractor,
   AnthropicRequirementExtractor,
@@ -461,6 +466,62 @@ const ROUTES: Route[] = [
   route('GET', '/projects/:projectId/budget', async ({ actor, params, budget }) =>
     budget.summary(actor, params['projectId'] as string),
   ),
+
+  // ---------------------------------------------------------------------
+  // The cost breakdown a budget hangs off
+  // ---------------------------------------------------------------------
+  //
+  // These had no routes either, which meant a budget line could not be
+  // created from any client: the money subsystem was unreachable for setup
+  // while being fully built underneath.
+
+  // Every one of these runs inside `withTenant`. The WBS functions filter by
+  // tenant_id explicitly, which looks like enough and is not: the
+  // application connects as `plumbline_app`, row-level security is FORCED on
+  // these tables, and a query issued with no tenant context returns zero
+  // rows rather than failing. The symptom is a cost code picker that is
+  // simply empty, on a screen where empty looks like "nothing defined yet".
+  route('GET', '/wbs/segments', async ({ actor, db }) => ({
+    segments: await withTenant(db, actor.tenantId, (tx) => listSegments(tx, actor.tenantId)),
+  })),
+
+  route('GET', '/projects/:projectId/wbs/:segmentKey', async ({ actor, params, db }) => ({
+    values: await withTenant(db, actor.tenantId, (tx) =>
+      listSegmentValues(tx, actor.tenantId, {
+        segmentKey: params['segmentKey'] as string,
+        projectId: params['projectId'] as string,
+      }),
+    ),
+  })),
+
+  route('POST', '/projects/:projectId/wbs/:segmentKey', async ({ actor, params, body, db, budget }) => {
+    // Gated on the budget tool's own privilege rather than on nothing: a
+    // cost code is part of the financial structure, and anybody who can
+    // invent one can make the budget say whatever they like.
+    await budget.assertCanManageCodes(actor, params['projectId'] as string)
+    return withTenant(db, actor.tenantId, (tx) =>
+      addSegmentValue(tx, actor.tenantId, {
+        segmentKey: params['segmentKey'] as string,
+        code: String(body['code'] ?? ''),
+        label: String(body['label'] ?? ''),
+        projectId: params['projectId'] as string,
+      }),
+    )
+  }),
+
+  route('GET', '/projects/:projectId/budget-codes', async ({ actor, params, db }) => ({
+    codes: await withTenant(db, actor.tenantId, (tx) =>
+      listBudgetCodes(tx, actor.tenantId, params['projectId'] as string),
+    ),
+  })),
+
+  route('POST', '/projects/:projectId/budget-codes', async ({ actor, params, body, db, budget }) => {
+    await budget.assertCanManageCodes(actor, params['projectId'] as string)
+    return createBudgetCode(db as Db, actor.tenantId, {
+      projectId: params['projectId'] as string,
+      values: (body['values'] ?? {}) as Record<string, string>,
+    })
+  }),
 
   route('POST', '/projects/:projectId/budget/lines', async ({ actor, params, body, budget }) =>
     budget.addLine(actor, {

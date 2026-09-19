@@ -3,6 +3,7 @@ import type { BudgetLineView, CommitmentView, InvoiceView } from '../api/client.
 import { ToolLandingPage } from '../layouts/index.js'
 import { useSession } from '../session/SessionProvider.tsx'
 import { Banner, Button, Card, Pill, Spinner, Table, Tabs } from '../ui/index.js'
+import { BudgetSetup } from './BudgetSetup.tsx'
 
 /**
  * The money.
@@ -55,6 +56,8 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
   const [costsVisible, setCostsVisible] = useState(true)
   const [commitments, setCommitments] = useState<CommitmentView[] | null>([])
   const [openCommitment, setOpenCommitment] = useState<CommitmentView | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [reloadToken, setReloadToken] = useState(0)
   const setBilling = (row: CommitmentView): void =>
     setOpenCommitment((current) => (current?.commitmentId === row.commitmentId ? null : row))
   const [loading, setLoading] = useState(true)
@@ -91,7 +94,7 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
     return () => {
       cancelled = true
     }
-  }, [api, projectId])
+  }, [api, projectId, reloadToken])
 
   const overBudget = lines.filter((line) => line.projectedOverUnder?.startsWith('-'))
 
@@ -127,7 +130,20 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
         ) : undefined
       }
     >
-      <Card>
+      <Card
+        actions={
+          // Only where cost figures are visible. Somebody who may see the
+          // scope and not the money has no business setting the money.
+          costsVisible && tab === 'budget' ? (
+            <Button variant="ghost" onClick={() => setEditing((on) => !on)}>
+              {editing ? 'Done' : 'Add a line'}
+            </Button>
+          ) : undefined
+        }
+      >
+        {editing && tab === 'budget' ? (
+          <BudgetSetup projectId={projectId} onAdded={() => setReloadToken((n) => n + 1)} />
+        ) : null}
         {loading ? (
           <Spinner label="Loading the budget" />
         ) : tab === 'budget' || commitments === null ? (

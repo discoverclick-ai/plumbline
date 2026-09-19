@@ -831,6 +831,33 @@ export class ApiClient {
     return this.request('GET', `/projects/${projectId}/clocks`)
   }
 
+  wbsSegments(): Promise<{ segments: { key: string; label: string; required: boolean }[] }> {
+    return this.request('GET', '/wbs/segments')
+  }
+
+  wbsValues(projectId: string, segmentKey: string): Promise<{ values: { code: string; label: string }[] }> {
+    return this.request('GET', `/projects/${projectId}/wbs/${segmentKey}`)
+  }
+
+  addWbsValue(projectId: string, segmentKey: string, code: string, label: string): Promise<unknown> {
+    return this.request('POST', `/projects/${projectId}/wbs/${segmentKey}`, { code, label })
+  }
+
+  budgetCodes(projectId: string): Promise<{ codes: { id: string; display: string }[] }> {
+    return this.request('GET', `/projects/${projectId}/budget-codes`)
+  }
+
+  createBudgetCode(projectId: string, values: Record<string, string>): Promise<{ id: string; display: string }> {
+    return this.request('POST', `/projects/${projectId}/budget-codes`, { values })
+  }
+
+  addBudgetLine(
+    projectId: string,
+    input: { budgetCodeId: string; description?: string; originalAmount: string; unitOfMeasure?: string; originalQuantity?: string },
+  ): Promise<unknown> {
+    return this.request('POST', `/projects/${projectId}/budget/lines`, input)
+  }
+
   invoices(commitmentId: string): Promise<{ invoices: InvoiceView[] }> {
     return this.request('GET', `/commitments/${commitmentId}/invoices`)
   }
