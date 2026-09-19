@@ -698,3 +698,68 @@ export async function findAttachment(
   if (!row) return null
   return { attachment: toAttachment(row as never), storageKey: row.storage_key }
 }
+
+export interface SearchHit {
+  record: ConstructionRecord
+  projectName: string
+  rank: number
+}
+
+export interface SearchFilter {
+  tenantId: string
+  query: string
+  /** Omitted searches every project this person is on. */
+  projectId?: string
+  /** Company admins see the whole tenant; everyone else is joined to their memberships. */
+  memberUserId?: string
+  limit?: number
+}
+
+/**
+ * Lexical search over the designation, the title and every string in the body.
+ *
+ * Two matchers rather than one. `websearch_to_tsquery` handles what people
+ * type, quoted phrases and all, and the trigram clause catches designations,
+ * because "RFI 14", "rfi-014" and "RFI014" are one thing to a superintendent
+ * and three strings to a tokenizer.
+ */
+export async function searchRecords(db: Db, filter: SearchFilter): Promise<SearchHit[]> {
+  const params: unknown[] = [filter.tenantId, filter.query]
+  const conditions = ['r.tenant_id = $1']
+
+  const add = (fragment: string, value: unknown): void => {
+    params.push(value)
+    conditions.push(fragment.replace('?', `$${params.length}`))
+  }
+  if (filter.projectId) add('r.project_id = ?', filter.projectId)
+  if (filter.memberUserId) {
+    params.push(filter.memberUserId)
+    conditions.push(
+      `EXISTS (SELECT 1 FROM project_memberships m
+                WHERE m.tenant_id = $1 AND m.project_id = r.project_id AND m.user_id = $${params.length})`,
+    )
+  }
+  params.push(Math.min(filter.limit ?? 50, 200))
+
+  const { rows } = await db.query(
+    `SELECT ${RECORD_COLUMNS.split(',').map((c) => `r.${c.trim()}`).join(', ')},
+            p.name AS project_name,
+            GREATEST(
+              ts_rank_cd(r.search_vector, websearch_to_tsquery('english', $2)),
+              similarity(r.designation, $2)
+            ) AS rank
+       FROM records r
+       JOIN projects p ON p.id = r.project_id AND p.tenant_id = r.tenant_id
+      WHERE ${conditions.join(' AND ')}
+        AND (r.search_vector @@ websearch_to_tsquery('english', $2) OR r.designation % $2)
+      ORDER BY rank DESC, r.created_at DESC
+      LIMIT $${params.length}`,
+    params,
+  )
+
+  return rows.map((row) => ({
+    record: toRecord(row as never),
+    projectName: (row as { project_name: string }).project_name,
+    rank: Number((row as { rank: string }).rank),
+  }))
+}

@@ -9,7 +9,7 @@ import {
 } from './permissions.js'
 import { normalizeBody, type RecordBody, type RecordType, type TransitionSpec } from './record-type.js'
 import { loadAccess } from './repositories/permissions.js'
-import { getRecordType } from './repositories/record-types.js'
+import { getRecordType, loadRecordTypes } from './repositories/record-types.js'
 import * as repo from './repositories/records.js'
 import type {
   BallInCourtEntry,
@@ -265,6 +265,69 @@ export class RecordKernel {
       })
       assertLevel(access, type.toolKey, 'read_only')
       return this.view(tx, access, type, record)
+    })
+  }
+
+  /**
+   * Find a record again.
+   *
+   * Permission filtering happens in two places on purpose. The query only
+   * returns projects this person is a member of, which is cheap and keeps the
+   * result set small; then each distinct project's access snapshot decides
+   * which record TYPES they may see in it, because a trade partner on a job
+   * can read punch items and not daily logs, and a search that ignored that
+   * would be a very efficient way to read somebody else's mail.
+   *
+   * Access is loaded once per project rather than once per hit: a page of
+   * results usually spans one or two jobs, and loading it per row would make
+   * search the slowest thing in the product.
+   */
+  async search(
+    actor: Actor,
+    input: { query: string; projectId?: string; limit?: number },
+  ): Promise<{ record: ConstructionRecord; projectName: string }[]> {
+    const query = input.query?.trim()
+    if (!query) return []
+
+    return withTenant(this.db, actor.tenantId, async (tx) => {
+      const companyAccess = await loadAccess(tx, {
+        userId: actor.userId,
+        tenantId: actor.tenantId,
+        projectId: null,
+      })
+      const limit = Math.min(input.limit ?? 25, 100)
+
+      const hits = await repo.searchRecords(tx, {
+        tenantId: actor.tenantId,
+        query,
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+        ...(companyAccess.isCompanyAdmin ? {} : { memberUserId: actor.userId }),
+        // Over-fetch, because the type filter below removes some.
+        limit: limit * 3,
+      })
+
+      const types = await loadRecordTypes(tx)
+      const accessByProject = new Map<string, AccessSnapshot>()
+      const visible: { record: ConstructionRecord; projectName: string }[] = []
+
+      for (const hit of hits) {
+        if (visible.length >= limit) break
+        let access = accessByProject.get(hit.record.projectId)
+        if (!access) {
+          access = await loadAccess(tx, {
+            userId: actor.userId,
+            tenantId: actor.tenantId,
+            projectId: hit.record.projectId,
+          })
+          accessByProject.set(hit.record.projectId, access)
+        }
+        const type = types.get(hit.record.typeKey)
+        if (!type) continue
+        if (!hasLevel(access, type.toolKey, 'read_only')) continue
+        visible.push({ record: hit.record, projectName: hit.projectName })
+      }
+
+      return visible
     })
   }
 

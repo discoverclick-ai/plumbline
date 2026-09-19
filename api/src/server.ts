@@ -376,6 +376,28 @@ const ROUTES: Route[] = [
     capture.stats(actor, { projectId: params['projectId'] as string }),
   ),
 
+  /**
+   * One search box for the whole account. Scoped to a project when asked, and
+   * to what this person may actually read either way.
+   */
+  route('GET', '/search', async ({ actor, kernel, query }) => ({
+    results: (
+      await kernel.search(actor, {
+        query: query.get('q') ?? '',
+        ...(query.get('projectId') ? { projectId: query.get('projectId') as string } : {}),
+        ...(query.get('limit') ? { limit: Number(query.get('limit')) } : {}),
+      })
+    ).map((hit) => ({
+      id: hit.record.id,
+      projectId: hit.record.projectId,
+      projectName: hit.projectName,
+      typeKey: hit.record.typeKey,
+      designation: hit.record.designation,
+      title: hit.record.title,
+      status: hit.record.status,
+    })),
+  })),
+
   route('GET', '/ball-in-court', async ({ kernel, actor, query }) => {
     const entries = await kernel.ballInCourt(actor, {
       ...(query.get('projectId') ? { projectId: query.get('projectId') as string } : {}),
