@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import {
   AnthropicInterpretationProvider,
+  AdministrationService,
   AnthropicNoticeDrafter,
   AnthropicObligationExtractor,
   AnthropicRequirementExtractor,
@@ -96,6 +97,7 @@ interface RequestContext {
   photos: PhotoService
   specs: SpecificationService
   procore: ProcoreImporter
+  admin: AdministrationService
   schedule: ScheduleService
   mcp: McpToolRunner
   commitments: CommitmentService
@@ -750,6 +752,65 @@ const ROUTES: Route[] = [
     }),
   })),
 
+  // ---------------------------------------------------------------------
+  // Setting a company up
+  // ---------------------------------------------------------------------
+  //
+  // There was no route to create a project, a company, a person or a
+  // membership. The product could run a job beautifully and had no way to
+  // start one.
+
+  route('POST', '/projects', async ({ actor, body, admin }) =>
+    admin.projectStart(actor, {
+      number: String(body['number'] ?? ''),
+      name: String(body['name'] ?? ''),
+      ...(body['stage'] ? { stage: body['stage'] as Parameters<AdministrationService['projectStart']>[1]['stage'] } : {}),
+      ...(body['city'] ? { city: String(body['city']) } : {}),
+      ...(body['stateCode'] ? { stateCode: String(body['stateCode']) } : {}),
+      ...(body['timeZone'] ? { timeZone: String(body['timeZone']) } : {}),
+      ...(body['contractValue'] ? { contractValue: String(body['contractValue']) } : {}),
+    }),
+  ),
+
+  route('GET', '/companies', async ({ actor, admin }) => ({ companies: await admin.companies(actor) })),
+
+  route('POST', '/companies', async ({ actor, body, admin }) =>
+    admin.addCompany(actor, {
+      name: String(body['name'] ?? ''),
+      kind: body['kind'] as Parameters<AdministrationService['addCompany']>[1]['kind'],
+      ...(body['trade'] ? { trade: String(body['trade']) } : {}),
+    }),
+  ),
+
+  route('GET', '/people', async ({ actor, admin }) => ({ people: await admin.people(actor) })),
+
+  route('POST', '/people', async ({ actor, body, admin }) =>
+    admin.addPerson(actor, {
+      organizationId: String(body['organizationId'] ?? ''),
+      email: String(body['email'] ?? ''),
+      name: String(body['name'] ?? ''),
+      ...(body['jobTitle'] ? { jobTitle: String(body['jobTitle']) } : {}),
+      ...(body['password'] ? { password: String(body['password']) } : {}),
+      ...(body['companyPermissionTemplateId'] !== undefined
+        ? { companyPermissionTemplateId: body['companyPermissionTemplateId'] as string | null }
+        : {}),
+    }),
+  ),
+
+  route('GET', '/permission-templates', async ({ actor, query, admin }) => ({
+    templates: await admin.templates(actor, (query.get('scope') as 'company' | 'project' | null) ?? undefined),
+  })),
+
+  route('POST', '/projects/:projectId/members', async ({ actor, params, body, admin }) => {
+    await admin.addMember(actor, {
+      projectId: params['projectId'] as string,
+      userId: String(body['userId'] ?? ''),
+      ...(body['permissionTemplateName'] ? { permissionTemplateName: String(body['permissionTemplateName']) } : {}),
+      ...(body['permissionTemplateId'] ? { permissionTemplateId: String(body['permissionTemplateId']) } : {}),
+    })
+    return { ok: true }
+  }),
+
   /**
    * Bringing a job across from Procore.
    *
@@ -1279,6 +1340,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
   })
 
   const procoreImporter = new ProcoreImporter(pool as Db)
+  const administration = new AdministrationService(pool as Db)
 
   let photoService: PhotoService | null = null
   const photos = (): PhotoService => {
@@ -1352,6 +1414,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           photos: photos(),
           specs: specService,
           procore: procoreImporter,
+          admin: administration,
           mcp: mcpRunner,
           commitments: commitmentService,
           invoicing: invoicingService,
