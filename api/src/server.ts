@@ -139,17 +139,25 @@ const ROUTES: Route[] = [
       const access = await loadAccess(tx, { userId: actor.userId, tenantId: actor.tenantId, projectId: null })
       // A company admin sees the portfolio; everyone else sees the jobs they
       // are actually on.
+      // Both filter on tenant_id explicitly even though withTenant has already
+      // set the context and row-level security would confine them. Defence in
+      // depth costs one clause here, and the alternative is a query whose
+      // correctness depends on which pool happens to be passed in.
       const { rows } = access.isCompanyAdmin
         ? await tx.query(
-            `SELECT id, number, name, stage, city, state_code, contract_value FROM projects ORDER BY number`,
+            `SELECT id, number, name, stage, city, state_code, contract_value
+               FROM projects
+              WHERE tenant_id = $1
+              ORDER BY number`,
+            [actor.tenantId],
           )
         : await tx.query(
             `SELECT p.id, p.number, p.name, p.stage, p.city, p.state_code, p.contract_value
                FROM projects p
                JOIN project_memberships m ON m.project_id = p.id
-              WHERE m.user_id = $1
+              WHERE p.tenant_id = $1 AND m.user_id = $2
               ORDER BY p.number`,
-            [actor.userId],
+            [actor.tenantId, actor.userId],
           )
       return { projects: rows }
     }),
