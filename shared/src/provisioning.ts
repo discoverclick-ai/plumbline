@@ -1,4 +1,5 @@
 import { hashPassword } from './auth.js'
+import { installDefaultWbs } from './wbs.js'
 import { withTenant, type Db } from './db.js'
 import { NotFoundError } from './errors.js'
 import type {
@@ -297,6 +298,10 @@ export async function provisionTenant(db: Db, input: ProvisionTenantInput): Prom
     for (const spec of DEFAULT_TEMPLATES) {
       templateIds.set(spec.name, await createTemplate(tx, tenantId, spec))
     }
+
+    // The chart of accounts a contractor already has. Shipped as a default
+    // rather than a built-in, because plenty of them use their own.
+    await installDefaultWbs(tx, tenantId)
 
     const organizationId = await createOrganization(tx, tenantId, {
       name: input.organizationName ?? input.tenantName,
