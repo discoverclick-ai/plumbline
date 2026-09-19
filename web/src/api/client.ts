@@ -252,6 +252,29 @@ export interface ExposureView {
   records: { recordId: string; designation: string; title: string; status: string; holderName: string | null }[]
 }
 
+export interface PhotoView {
+  id: string
+  projectId: string
+  filename: string | null
+  contentType: string
+  byteSize: number
+  /** Local, with no zone: what the camera wrote. */
+  takenAtLocal: string | null
+  uploadedAt: string
+  latitude: string | null
+  longitude: string | null
+  orientation: number | null
+  cameraMake: string | null
+  cameraModel: string | null
+  width: number | null
+  height: number | null
+  metadataRead: boolean
+  caption: string | null
+  uploadedByName: string | null
+  albums: string[]
+  recordIds: string[]
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -430,6 +453,60 @@ export class ApiClient {
 
   rejectObligation(obligationId: string): Promise<{ ok: true }> {
     return this.request('POST', `/obligations/${obligationId}/reject`)
+  }
+
+  photos(
+    projectId: string,
+    filter: { from?: string; to?: string; albumId?: string; recordId?: string; undated?: boolean } = {},
+  ): Promise<{ photos: PhotoView[] }> {
+    const query = new URLSearchParams()
+    if (filter.from) query.set('from', filter.from)
+    if (filter.to) query.set('to', filter.to)
+    if (filter.albumId) query.set('albumId', filter.albumId)
+    if (filter.recordId) query.set('recordId', filter.recordId)
+    if (filter.undated) query.set('undated', 'true')
+    const suffix = query.toString() ? `?${query}` : ''
+    return this.request('GET', `/projects/${projectId}/photos${suffix}`)
+  }
+
+  /**
+   * The image itself, fetched with the bearer token and handed to the browser
+   * as an object URL. An <img src> pointing at the API would be
+   * unauthenticated and would render as a broken image.
+   */
+  async photoObjectUrl(photoId: string): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/photos/${photoId}/file`, {
+      headers: { ...(this.token ? { authorization: `Bearer ${this.token}` } : {}) },
+    })
+    if (!response.ok) throw new ApiError(response.status, 'photo_failed', 'That photograph could not be loaded')
+    return URL.createObjectURL(await response.blob())
+  }
+
+  uploadPhoto(
+    projectId: string,
+    file: File,
+    caption?: string,
+  ): Promise<{ photo: PhotoView; duplicate: boolean }> {
+    return fetch(`${this.baseUrl}/projects/${projectId}/photos`, {
+      method: 'POST',
+      headers: {
+        'content-type': file.type || 'image/jpeg',
+        'x-filename': file.name,
+        ...(caption ? { 'x-caption': caption } : {}),
+        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+      },
+      body: file,
+    }).then(async (response) => {
+      const parsed = (await response.json()) as { photo: PhotoView; duplicate: boolean; error?: string; message?: string }
+      if (!response.ok) {
+        throw new ApiError(response.status, parsed.error ?? 'upload_failed', parsed.message ?? 'Upload failed')
+      }
+      return parsed
+    })
+  }
+
+  createAlbum(projectId: string, name: string, description?: string): Promise<{ id: string }> {
+    return this.request('POST', `/projects/${projectId}/photo-albums`, { name, description })
   }
 
   lookahead(projectId: string, weeks = 3): Promise<{ activities: ActivityView[] }> {

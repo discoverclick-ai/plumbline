@@ -5,6 +5,7 @@ import { render, type RenderResult } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import type { Pool } from 'pg'
 import { createApiServer } from '@plumbline/api/dist/server.js'
+import { FilesystemBlobStore } from '@plumbline/shared'
 import {
   addProjectMember,
   createOrganization,
@@ -59,7 +60,7 @@ export interface Harness {
   close: () => Promise<void>
 }
 
-export async function startHarness(databaseUrl: string): Promise<Harness> {
+export async function startHarness(databaseUrl: string, options: { blobRoot?: string } = {}): Promise<Harness> {
   const superPool = createPool({ connectionString: databaseUrl })
 
   const roleName = `web_probe_${randomUUID().slice(0, 8).replace(/-/g, '')}`
@@ -71,7 +72,13 @@ export async function startHarness(databaseUrl: string): Promise<Harness> {
   const appPool = createPool({ connectionString: url.toString() })
 
   const provider = new ScriptedProvider()
-  const server: Server = createApiServer(appPool, { interpretationProvider: provider })
+  // The blob root is shared with whatever seeded the data. A test that seeds
+  // photographs through its own store and then serves them from the default
+  // one gets a gallery of broken images and an unhelpful ENOENT.
+  const server: Server = createApiServer(appPool, {
+    interpretationProvider: provider,
+    ...(options.blobRoot ? { blobStore: new FilesystemBlobStore(options.blobRoot) } : {}),
+  })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address() as AddressInfo
 
