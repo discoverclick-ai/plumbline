@@ -51,6 +51,24 @@ export interface PushResult {
   detail?: string
 }
 
+export interface SyncConflict {
+  clientOpId: string
+  recordId: string | null
+  designation: string | null
+  title: string | null
+  typeKey: string | null
+  outcome: 'conflicted' | 'rejected'
+  detail: string | null
+  /** When the phone says it happened, which is the true one. */
+  occurredAt: string
+  /** When it reached the server, which on a job can be eight hours later. */
+  receivedAt: string
+  deviceLabel: string | null
+  deviceOwner: string | null
+  applied: string[]
+  dropped: { field: string; value: string }[]
+}
+
 export class SyncService {
   constructor(private readonly db: Db) {}
 
@@ -356,34 +374,58 @@ export class SyncService {
     return (snapshot as Record<string, unknown>) ?? null
   }
 
-  /** What could not be applied, for somebody at a desk to look at. */
-  async conflicts(actor: Actor, projectId: string): Promise<
-    { clientOpId: string; recordId: string | null; detail: string | null; occurredAt: Date; dropped: string[] }[]
-  > {
+  /**
+   * What could not be applied, for somebody at a desk to look at.
+   *
+   * Joined out to the record and the device, because "whose phone was this
+   * and which RFI" is the first question anybody asks, and a screen that
+   * answers it with two UUIDs is one nobody uses twice. The dropped VALUES
+   * come too: a conflict list that says a field was lost without saying what
+   * was in it gives the person no way to put it back.
+   */
+  async conflicts(actor: Actor, projectId: string): Promise<SyncConflict[]> {
     return withTenant(this.db, actor.tenantId, async (tx) => {
-      const { rows } = await tx.query<{
-        client_op_id: string
-        record_id: string | null
-        detail: string | null
-        occurred_at: Date
-        dropped_fields: string[]
-      }>(
-        `SELECT o.client_op_id, o.record_id, o.detail, o.occurred_at, o.dropped_fields
+      const { rows } = await tx.query<Record<string, unknown>>(
+        `SELECT o.client_op_id, o.record_id, o.detail, o.occurred_at, o.received_at,
+                o.outcome::text AS outcome, o.dropped_fields, o.applied_fields, o.payload,
+                r.designation, r.title, r.type_key,
+                d.label AS device_label, u.name AS device_owner
            FROM sync_operations o
            LEFT JOIN records r ON r.id = o.record_id
+           JOIN sync_devices d ON d.id = o.device_id AND d.tenant_id = o.tenant_id
+      LEFT JOIN users u ON u.id = d.user_id AND u.tenant_id = o.tenant_id
           WHERE o.tenant_id = $1 AND o.outcome IN ('conflicted', 'rejected')
             AND (r.project_id = $2 OR o.record_id IS NULL)
           ORDER BY o.received_at DESC
           LIMIT 200`,
         [actor.tenantId, projectId],
       )
-      return rows.map((r) => ({
-        clientOpId: r.client_op_id,
-        recordId: r.record_id,
-        detail: r.detail,
-        occurredAt: r.occurred_at,
-        dropped: r.dropped_fields,
-      }))
+      return rows.map((r) => {
+        const dropped = (r['dropped_fields'] as string[] | null) ?? []
+        // For a pushed update the payload IS the body. Version snapshots
+        // written elsewhere in this file wrap it under `body`, so both shapes
+        // are read rather than assuming the one this query mostly returns.
+        const payload = (r['payload'] as Record<string, unknown> | null) ?? {}
+        const body = ((payload['body'] as Record<string, unknown> | undefined) ?? payload) as Record<string, unknown>
+        return {
+          clientOpId: r['client_op_id'] as string,
+          recordId: (r['record_id'] as string | null) ?? null,
+          designation: (r['designation'] as string | null) ?? null,
+          title: (r['title'] as string | null) ?? null,
+          typeKey: (r['type_key'] as string | null) ?? null,
+          outcome: r['outcome'] as 'conflicted' | 'rejected',
+          detail: (r['detail'] as string | null) ?? null,
+          occurredAt: (r['occurred_at'] as Date).toISOString(),
+          receivedAt: (r['received_at'] as Date).toISOString(),
+          deviceLabel: (r['device_label'] as string | null) ?? null,
+          deviceOwner: (r['device_owner'] as string | null) ?? null,
+          applied: (r['applied_fields'] as string[] | null) ?? [],
+          // What the device actually typed, field by field, so it can be
+          // re-entered. A conflict that says "notes was dropped" and not what
+          // was in it is a conflict nobody can resolve.
+          dropped: dropped.map((field) => ({ field, value: String(body[field] ?? '') })),
+        }
+      })
     })
   }
 }

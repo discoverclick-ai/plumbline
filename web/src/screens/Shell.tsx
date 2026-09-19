@@ -11,6 +11,7 @@ import { Chasing } from './Chasing.tsx'
 import { Drawings } from './Drawings.tsx'
 import { Photos } from './Photos.tsx'
 import { SubmittalRegister } from './SubmittalRegister.tsx'
+import { SyncConflicts } from './SyncConflicts.tsx'
 import { CaptureInbox } from './CaptureInbox.tsx'
 import { RecordDetail } from './RecordDetail.tsx'
 import { ToolLanding } from './ToolLanding.tsx'
@@ -141,6 +142,7 @@ type ProjectTab =
     | 'budget'
     | 'contracts'
     | 'chasing'
+    | 'field'
     | 'inbox'
 
 export function ProjectShell({ project, onLeave }: { project: ProjectView; onLeave: () => void }) {
@@ -180,6 +182,11 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
     tabs.push({ key: 'chasing', label: 'Chasing' })
   }
   if (atLeast(level('capture'), 'read_only')) tabs.push({ key: 'inbox', label: 'Capture inbox' })
+  // Same audience as chasing: this is the office's screen, about what the
+  // field typed and the server could not keep.
+  if (atLeast(level('project_team'), 'read_only') && atLeast(level('rfis'), 'standard')) {
+    tabs.push({ key: 'field', label: 'From the field' })
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -232,6 +239,7 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
           {tab === 'lookahead' && <Lookahead projectId={project.id} projectName={project.name} />}
           {tab === 'photos' && <Photos projectId={project.id} projectName={project.name} />}
           {tab === 'chasing' && <Chasing projectId={project.id} projectName={project.name} />}
+          {tab === 'field' && <SyncConflicts projectId={project.id} projectName={project.name} />}
           {tab === 'budget' && <Budget projectId={project.id} projectName={project.name} />}
           {tab === 'contracts' && <Contracts projectId={project.id} projectName={project.name} />}
           {tab === 'inbox' && <CaptureInbox projectId={project.id} projectName={project.name} />}

@@ -361,6 +361,22 @@ export interface InvoiceView {
   amountDue: string
 }
 
+export interface SyncConflictView {
+  clientOpId: string
+  recordId: string | null
+  designation: string | null
+  title: string | null
+  typeKey: string | null
+  outcome: 'conflicted' | 'rejected'
+  detail: string | null
+  occurredAt: string
+  receivedAt: string
+  deviceLabel: string | null
+  deviceOwner: string | null
+  applied: string[]
+  dropped: { field: string; value: string }[]
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -716,6 +732,10 @@ export class ApiClient {
     })
     if (!response.ok) throw new ApiError(response.status, 'sheet_failed', 'That sheet could not be loaded')
     return response.arrayBuffer()
+  }
+
+  syncConflicts(projectId: string): Promise<{ conflicts: SyncConflictView[] }> {
+    return this.request('GET', `/projects/${projectId}/sync-conflicts`)
   }
 
   escalations(projectId: string): Promise<{ escalations: EscalationView[] }> {
