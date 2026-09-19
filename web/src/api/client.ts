@@ -330,6 +330,22 @@ export interface RequirementView {
   submittalId: string | null
 }
 
+export interface StatutoryClockView {
+  id: string
+  state: string
+  deadlineType: string
+  citation: string
+  citationUrl: string | null
+  summary: string
+  consequence: string
+  startedOn: string
+  dueOn: string
+  warnOn: string
+  triggeredBy: string
+  noticeRecordId: string | null
+  computation: Record<string, unknown>
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -632,6 +648,29 @@ export class ApiClient {
 
   clocks(projectId: string): Promise<{ clocks: ClockView[] }> {
     return this.request('GET', `/projects/${projectId}/clocks`)
+  }
+
+  statutoryClocks(projectId: string): Promise<{ clocks: StatutoryClockView[] }> {
+    return this.request('GET', `/projects/${projectId}/statutory-clocks`)
+  }
+
+  setStatutoryFacts(
+    projectId: string,
+    facts: {
+      jurisdiction: string
+      projectType?: string
+      claimantRole: string
+      firstFurnishing?: string
+      lastFurnishing?: string
+      completionDate?: string
+      contractExecuted?: string
+    },
+  ): Promise<{ started: number; skipped: { citation: string; reason: string }[]; unverified: { citation: string; summary: string }[] }> {
+    return this.request('PUT', `/projects/${projectId}/statutory-facts`, facts)
+  }
+
+  draftNotice(clockId: string): Promise<{ recordId: string; subject: string; body: string; missing: string[] }> {
+    return this.request('POST', `/clocks/${clockId}/draft-notice`)
   }
 
   claimFile(clockId: string): Promise<Record<string, unknown>> {

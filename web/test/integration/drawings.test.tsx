@@ -190,3 +190,33 @@ describe('the screen', () => {
     expect(alert.textContent).toMatch(/rather than working from a blank screen/)
   })
 })
+
+describe('placing a pin', () => {
+  it('is a mode, not the default click', async () => {
+    renderAsUser(harness, pmToken, <Drawings projectId={project.projectId} projectName={project.projectName} />)
+    await screen.findByText('A-101')
+
+    // A screen where every stray click drops a pin on a drawing is one people
+    // stop panning.
+    expect(await screen.findByRole('button', { name: 'Pin a record' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Pin a record' }))
+    expect(await screen.findByRole('button', { name: 'Click the sheet…' })).toBeInTheDocument()
+  })
+
+  it('offers only the open records', async () => {
+    renderAsUser(harness, pmToken, <Drawings projectId={project.projectId} projectName={project.projectName} />)
+    await screen.findByText('A-101')
+    await userEvent.click(screen.getByText('S-401'))
+    await userEvent.click(await screen.findByRole('button', { name: 'Pin a record' }))
+
+    // jsdom gives every element a zero-size rect, so the click lands at 0,0 —
+    // which is a real coordinate and exactly what the clamp is for.
+    const canvas = document.querySelector('canvas') as HTMLCanvasElement
+    await userEvent.click(canvas)
+
+    expect(await screen.findByText('Pin which record?')).toBeInTheDocument()
+    // Pinning a closed RFI to a drawing is almost always somebody picking the
+    // wrong row from a long list.
+    expect(await screen.findByText(/Embedment at grid C4/)).toBeInTheDocument()
+  })
+})

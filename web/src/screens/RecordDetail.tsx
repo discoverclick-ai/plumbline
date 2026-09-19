@@ -46,6 +46,7 @@ export function RecordDetail({
   const [busy, setBusy] = useState(false)
   const [comment, setComment] = useState('')
   const [blocking, setBlocking] = useState<(ActivityView & { kind: string })[]>([])
+  const [linkable, setLinkable] = useState<ActivityView[] | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -202,8 +203,33 @@ export function RecordDetail({
             Somebody deciding whether to answer today needs to know that steel
             starts Thursday before they read the question, not after.
           */}
-          {blocking.length > 0 && (
-            <Card title="Holding up">
+          {(blocking.length > 0 || linkable !== null) && (
+            <Card
+              title="Holding up"
+              actions={
+                // The read half of this existed and the write half did not:
+                // the record could show what it blocked and offered no way to
+                // say so. A feature you can only read is half a feature.
+                linkable === null ? (
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setLinkable([])
+                      void api
+                        .lookahead(view.record.projectId, 8)
+                        .then((r) => setLinkable(r.activities))
+                        .catch(() => setLinkable([]))
+                    }}
+                  >
+                    Link an activity
+                  </Button>
+                ) : (
+                  <Button variant="ghost" onClick={() => setLinkable(null)}>
+                    Cancel
+                  </Button>
+                )
+              }
+            >
               <div style={{ display: 'grid', gap: 8 }}>
                 {blocking.map((activity) => (
                   <div key={activity.activityCode} style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
@@ -228,6 +254,48 @@ export function RecordDetail({
                   </div>
                 ))}
               </div>
+
+              {linkable !== null && (
+                <div style={{ marginTop: 10, display: 'grid', gap: 2, maxHeight: 220, overflow: 'auto' }}>
+                  {linkable.length === 0 ? (
+                    <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-muted)' }}>
+                      Nothing starting in the next eight weeks, or no schedule has been imported.
+                    </p>
+                  ) : (
+                    linkable.map((activity) => (
+                      <button
+                        key={activity.activityCode}
+                        onClick={() => {
+                          void api
+                            .linkActivity(recordId, activity.activityCode)
+                            .then(() => api.recordActivities(recordId))
+                            .then((r) => {
+                              setBlocking(r.activities)
+                              setLinkable(null)
+                            })
+                            .catch((err: unknown) =>
+                              setError(err instanceof Error ? err.message : 'That link did not save'),
+                            )
+                        }}
+                        style={{
+                          textAlign: 'left',
+                          border: 'none',
+                          background: 'transparent',
+                          borderRadius: 6,
+                          padding: '6px 8px',
+                          font: 'inherit',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <strong>{activity.name}</strong>{' '}
+                        <span style={{ color: 'var(--ink-muted)', fontSize: 12 }}>
+                          {activity.activityCode} · {floatText(activity.totalFloatDays)}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
             </Card>
           )}
           <Card title={type.displayName}>

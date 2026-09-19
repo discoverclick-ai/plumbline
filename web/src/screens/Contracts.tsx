@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { ClauseView, ClockView, ContractDocumentView, ObligationView } from '../api/client.js'
+import type { ClauseView, ClockView, ContractDocumentView, ObligationView, StatutoryClockView } from '../api/client.js'
 import { ToolLandingPage } from '../layouts/index.js'
 import { useSession } from '../session/SessionProvider.tsx'
 import { Banner, Button, Card, EmptyState, Pill, Spinner, Table, Tabs } from '../ui/index.js'
@@ -167,7 +167,8 @@ export function clockTone(clock: ClockView, now: Date = new Date()): 'danger' | 
 
 export function Contracts({ projectId, projectName }: { projectId: string; projectName: string }) {
   const { api } = useSession()
-  const [tab, setTab] = useState<'clocks' | 'profile'>('clocks')
+  const [tab, setTab] = useState<'clocks' | 'statutory' | 'profile'>('clocks')
+  const [statutory, setStatutory] = useState<StatutoryClockView[] | null>([])
   const [documents, setDocuments] = useState<ContractDocumentView[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [clauses, setClauses] = useState<ClauseView[]>([])
@@ -189,11 +190,13 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
       // running on this job" when they simply may not see them is the one
       // wrong answer this screen could give.
       api.clocks(projectId).catch(() => ({ clocks: null })),
+      api.statutoryClocks(projectId).catch(() => ({ clocks: null })),
     ])
-      .then(([docs, running]) => {
+      .then(([docs, running, statute]) => {
         if (cancelled) return
         setDocuments(docs.documents)
         setClocks(running.clocks as ClockView[] | null)
+        setStatutory(statute.clocks as StatutoryClockView[] | null)
         setSelected((current) => current ?? docs.documents[0]?.id ?? null)
       })
       .catch((err: unknown) => {
@@ -253,9 +256,12 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
       tabs={
         <Tabs
           active={tab}
-          onSelect={(key) => setTab(key as 'clocks' | 'profile')}
+          onSelect={(key) => setTab(key as 'clocks' | 'statutory' | 'profile')}
           tabs={[
             ...(clocks === null ? [] : [{ key: 'clocks', label: 'Clocks', badge: running.length }]),
+            ...(statutory === null || statutory.length === 0
+              ? []
+              : [{ key: 'statutory', label: 'Lien & bond', badge: statutory.length }]),
             { key: 'profile', label: 'Contract Profile', badge: proposed.length },
           ]}
         />
@@ -280,6 +286,8 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
         <Card>
           <Spinner label="Loading the contracts" />
         </Card>
+      ) : tab === 'statutory' && statutory !== null ? (
+        <StatutoryClocks clocks={statutory} />
       ) : tab === 'clocks' && clocks !== null ? (
         <Card
           title="Running deadlines"
@@ -372,11 +380,75 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
               {
                 key: 'why',
                 header: '',
-                width: '200px',
+                width: '270px',
                 render: (row) => (
-                  <Button variant="ghost" onClick={() => setExpanded(expanded === row.id ? null : row.id)}>
-                    {expanded === row.id ? 'Hide' : 'Show work'}
-                  </Button>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <Button variant="ghost" onClick={() => setExpanded(expanded === row.id ? null : row.id)}>
+                      {expanded === row.id ? 'Hide' : 'Show work'}
+                    </Button>
+                    {/*
+                      "Draft", never "Send". The drafter writes the letter into
+                      the notice record and stops; the record does not move
+                      state, and there is no send button anywhere on this
+                      screen. An agent may draft anything here and serve
+                      nothing.
+                    */}
+                    {row.noticeRecordId ? (
+                      <Button
+                        variant="ghost"
+                        onClick={() => {
+                          setBusy(`draft-${row.id}`)
+                          setError(null)
+                          api
+                            .draftNotice(row.id)
+                            .then((drafted) => {
+                              if (drafted.missing.length > 0) {
+                                // The gaps go in front of the person, not in a
+                                // log. A drafted notice missing its addressee
+                                // is one somebody sends incomplete.
+                                setError(`Drafted into ${row.noticeDesignation}. Still missing: ${drafted.missing[0]}`)
+                              }
+                            })
+                            .catch((err: unknown) =>
+                              setError(err instanceof Error ? err.message : 'The draft could not be written'),
+                            )
+                            .finally(() => setBusy(null))
+                        }}
+                        disabled={busy === `draft-${row.id}`}
+                      >
+                        {busy === `draft-${row.id}` ? 'Drafting…' : 'Draft'}
+                      </Button>
+                    ) : null}
+                    {/*
+                      Offered on every clock, not only the expired ones. The
+                      point of assembling the file continuously is seeing the
+                      holes while there is still time to close them.
+                    */}
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setBusy(row.id)
+                        setError(null)
+                        api
+                          .claimFileMarkdown(row.id)
+                          .then(({ text, filename }) => {
+                            const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }))
+                            const anchor = document.createElement('a')
+                            anchor.href = url
+                            anchor.download = filename
+                            anchor.click()
+                            URL.revokeObjectURL(url)
+                          })
+                          .catch((err: unknown) =>
+                            setError(err instanceof Error ? err.message : 'The claim file could not be assembled'),
+                          )
+                          .finally(() => setBusy(null))
+                      }}
+                      disabled={busy === row.id}
+                    >
+                      {busy === row.id ? 'Assembling…' : 'Claim file'}
+                    </Button>
+                  </div>
                 ),
               },
             ]}
@@ -615,5 +687,52 @@ function Computation({ clock }: { clock: ClockView }) {
         </p>
       ))}
     </div>
+  )
+}
+
+/**
+ * Lien and bond deadlines.
+ *
+ * Separate from the contract clocks because they are a different animal:
+ * missing a contract deadline waives a claim you might have won, missing one
+ * of these removes the security for money already earned and spent.
+ *
+ * Every row carries the statute it rests on and the name of whoever verified
+ * it against the current text, because a deadline a contractor's attorney can
+ * look up in thirty seconds is one they will act on, and one they cannot is
+ * one they will ignore.
+ */
+function StatutoryClocks({ clocks }: { clocks: StatutoryClockView[] }) {
+  return (
+    <Card title="Lien and bond deadlines">
+      <div style={{ display: 'grid', gap: 10 }}>
+        {clocks.map((clock) => {
+          const days = Math.round((Date.parse(`${clock.dueOn}T00:00:00Z`) - Date.now()) / 86_400_000)
+          return (
+            <article
+              key={clock.id}
+              style={{ border: '1px solid var(--line)', borderRadius: 10, padding: 12 }}
+            >
+              <header style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
+                <strong>{clock.deadlineType.replace(/_/g, ' ')}</strong>
+                <Pill tone={days <= 0 ? 'danger' : days <= 30 ? 'warn' : 'neutral'}>
+                  {days <= 0 ? 'Passed' : `${days} days left`} · {clock.dueOn}
+                </Pill>
+              </header>
+              <p style={{ margin: '6px 0 0', fontSize: 13 }}>{clock.summary}</p>
+              {/* What it costs, in the contractor's own terms, not in
+                  statutory language. */}
+              <p style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--danger)' }}>{clock.consequence}</p>
+              <p style={{ margin: '6px 0 0', fontSize: 12, color: 'var(--ink-muted)' }}>
+                {clock.citation}
+                {clock.computation['verifiedBy'] ? ` · verified by ${String(clock.computation['verifiedBy'])}` : ''}
+                {' · running from '}
+                {clock.startedOn} ({clock.triggeredBy.replace(/_/g, ' ')})
+              </p>
+            </article>
+          )
+        })}
+      </div>
+    </Card>
   )
 }

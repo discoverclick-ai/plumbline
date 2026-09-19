@@ -248,3 +248,24 @@ describe('the clocks', () => {
     expect(screen.getByText(/plus 5 days/)).toBeInTheDocument()
   })
 })
+
+describe('drafting from the clock', () => {
+  it('writes the letter into the notice and says Draft, never Send', async () => {
+    renderAsUser(harness, pmToken, <Contracts projectId={project.projectId} projectName={project.projectName} />)
+    await screen.findByText('Differing site conditions')
+
+    // The drafter writes into the record and stops. There is no send button
+    // anywhere on this screen, and a test asserts that rather than trusting
+    // it: an agent may draft anything here and serve nothing.
+    expect(screen.queryByRole('button', { name: /^send|serve|issue/i })).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Draft' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Drafting…' })).not.toBeInTheDocument())
+
+    // The record is still where it was; the notice designation is unchanged
+    // and no state moved.
+    const row = (await screen.findByText('Differing site conditions')).closest('tr') as HTMLElement
+    expect(within(row).getByText(/NOT-/)).toBeInTheDocument()
+    expect(within(row).getByText('watching')).toBeInTheDocument()
+  })
+})

@@ -186,7 +186,18 @@ export function Drawings({ projectId, projectName }: { projectId: string; projec
           )}
         </Card>
 
-        {selected ? <SheetViewer sheet={selected} pins={pins} /> : <Card>{null}</Card>}
+        {selected ? (
+          <SheetViewer
+            sheet={selected}
+            projectId={projectId}
+            pins={pins}
+            onPinned={() => {
+              void api.pins(selected.drawingId).then((r) => setPins(r.pins))
+            }}
+          />
+        ) : (
+          <Card>{null}</Card>
+        )}
       </div>
     </ToolLandingPage>
   )
@@ -199,11 +210,27 @@ export function Drawings({ projectId, projectName }: { projectId: string; projec
  * The single most expensive mistake this screen can make is showing a
  * superseded sheet without saying so.
  */
-function SheetViewer({ sheet, pins }: { sheet: SheetView; pins: PinView[] }) {
+function SheetViewer({
+  sheet,
+  projectId,
+  pins,
+  onPinned,
+}: {
+  sheet: SheetView
+  projectId: string
+  pins: PinView[]
+  onPinned: () => void
+}) {
   const { api } = useSession()
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [status, setStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [scale, setScale] = useState(1)
+  // Pinning is a MODE, not the default click. A screen where every stray
+  // click drops a pin on a drawing is one people stop panning.
+  const [pinning, setPinning] = useState(false)
+  const [placing, setPlacing] = useState<{ x: number; y: number } | null>(null)
+
+
 
   const render = useCallback(async (): Promise<void> => {
     const canvas = canvasRef.current
@@ -255,6 +282,15 @@ function SheetViewer({ sheet, pins }: { sheet: SheetView; pins: PinView[] }) {
       }
       actions={
         <div style={{ display: 'flex', gap: 4 }}>
+          <Button
+            variant={pinning ? 'primary' : 'ghost'}
+            onClick={() => {
+              setPinning((on) => !on)
+              setPlacing(null)
+            }}
+          >
+            {pinning ? 'Click the sheet…' : 'Pin a record'}
+          </Button>
           <Button variant="ghost" onClick={() => setScale((s) => Math.max(0.5, s - 0.5))} disabled={scale <= 0.5}>
             −
           </Button>
@@ -272,7 +308,35 @@ function SheetViewer({ sheet, pins }: { sheet: SheetView; pins: PinView[] }) {
 
       <div style={{ position: 'relative', overflow: 'auto', maxHeight: '75vh', background: 'var(--surface-sunken)' }}>
         {status === 'loading' ? <Spinner label={`Rendering ${sheet.number}`} /> : null}
-        <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: 'auto' }} />
+        <canvas
+          ref={canvasRef}
+          onClick={(event) => {
+            if (!pinning) return
+            const rect = event.currentTarget.getBoundingClientRect()
+            setPlacing(pinFraction(rect, event.clientX, event.clientY))
+          }}
+          style={{ display: 'block', width: '100%', height: 'auto', cursor: pinning ? 'crosshair' : 'default' }}
+        />
+
+        {/*
+          The pin being placed, drawn before it is saved. Choosing the record
+          takes a moment and a mark that appears only after the choice leaves
+          somebody wondering whether the click registered.
+        */}
+        {placing ? (
+          <span
+            style={{
+              position: 'absolute',
+              left: `${placing.x * 100}%`,
+              top: `${placing.y * 100}%`,
+              transform: 'translate(-50%, -50%)',
+              width: 18,
+              height: 18,
+              borderRadius: '50%',
+              border: '2px dashed var(--accent)',
+            }}
+          />
+        ) : null}
 
         {pins.map((pin) => (
           <span
@@ -296,6 +360,85 @@ function SheetViewer({ sheet, pins }: { sheet: SheetView; pins: PinView[] }) {
           />
         ))}
       </div>
+
+      {placing ? (
+        <RecordPicker
+          projectId={projectId}
+          onCancel={() => setPlacing(null)}
+          onChoose={async (recordId) => {
+            try {
+              await api.placePin(sheet.revisionId, recordId, placing.x, placing.y)
+              setPlacing(null)
+              setPinning(false)
+              onPinned()
+            } catch {
+              setPlacing(null)
+            }
+          }}
+        />
+      ) : null}
     </Card>
+  )
+}
+
+/**
+ * Which record this pin is for.
+ *
+ * Only OPEN records, because pinning a closed RFI to a drawing is almost
+ * always somebody picking the wrong row from a long list, and the closed ones
+ * outnumber the open ones on any job past the first month.
+ */
+function RecordPicker({
+  projectId,
+  onChoose,
+  onCancel,
+}: {
+  projectId: string
+  onChoose: (recordId: string) => void
+  onCancel: () => void
+}) {
+  const { api } = useSession()
+  const [records, setRecords] = useState<{ id: string; designation: string; title: string }[]>([])
+
+  useEffect(() => {
+    api
+      .records(projectId, { open: true })
+      .then((r) => setRecords(r.records.map((rec) => ({ id: rec.id, designation: rec.designation, title: rec.title }))))
+      .catch(() => setRecords([]))
+  }, [api, projectId])
+
+  return (
+    <div style={{ marginTop: 10, padding: 12, background: 'var(--surface-sunken)', borderRadius: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <strong style={{ fontSize: 13 }}>Pin which record?</strong>
+        <Button variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+      <div style={{ display: 'grid', gap: 2, marginTop: 8, maxHeight: 220, overflow: 'auto' }}>
+        {records.length === 0 ? (
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--ink-muted)' }}>Nothing open to pin.</p>
+        ) : (
+          records.map((record) => (
+            <button
+              key={record.id}
+              onClick={() => onChoose(record.id)}
+              style={{
+                textAlign: 'left',
+                border: 'none',
+                background: 'transparent',
+                borderRadius: 6,
+                padding: '6px 8px',
+                font: 'inherit',
+                cursor: 'pointer',
+              }}
+            >
+              <strong style={{ fontVariantNumeric: 'tabular-nums' }}>{record.designation}</strong>{' '}
+              <span style={{ color: 'var(--ink-muted)' }}>{record.title}</span>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
   )
 }
