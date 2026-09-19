@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 /**
  * A lint rule, written as a test because it has earned one.
  *
- * Four separate times now a helper has read or written a tenant-scoped table
+ * Five separate times now a helper has read or written a tenant-scoped table
  * without filtering on the tenant, leaning on row-level security to confine
  * it. Each time it looked correct. Each time it was wrong for the same reason:
  * RLS confines the application role, and this codebase also runs provisioning,
@@ -20,10 +20,16 @@ import { describe, expect, it } from 'vitest'
  * Neither threw.
  *
  * The rule is deliberately narrow, because a rule that fires forty times is a
- * rule somebody deletes. All four bugs had one shape: the function was HANDED
- * a tenant id and then wrote a query that did not use it. That is the whole
- * rule. A query in a function with no tenant in scope is withTenant's problem,
- * not this one's.
+ * rule somebody deletes. All of them had one shape: the function was HANDED a
+ * tenant and then wrote a query that did not use it. That is the whole rule. A
+ * query in a function with no tenant in scope is withTenant's problem, not
+ * this one's.
+ *
+ * "Handed a tenant" means a `tenantId` parameter OR an `actor`, because an
+ * Actor is a tenant id and a user id in a wrapper. The fifth bug was a project
+ * existence check taking an actor: it said yes to another tenant's project id,
+ * and a company admin could then create a record pointing at it. The rule
+ * missed it because it was only looking for the word `tenantId`.
  *
  * Genuine exceptions carry `// tenant-filter-exempt: <reason>` above the line,
  * and the reason becomes part of the record.
@@ -97,7 +103,8 @@ function boundariesIn(source: string): Boundary[] {
     // for a signature spanning several lines.
     const head = source.slice(m.index, m.index + 600)
     const body = head.indexOf('{')
-    out.push({ index: m.index, hasTenant: /\btenantId\b/.test(body > 0 ? head.slice(0, body) : head) })
+    const params = body > 0 ? head.slice(0, body) : head
+    out.push({ index: m.index, hasTenant: /\btenantId\b/.test(params) || /\bactor\s*:/.test(params) })
   }
   return out
 }
@@ -175,6 +182,22 @@ describe('a function handed a tenant id uses it', () => {
     )
     expect(offences).toHaveLength(1)
     expect(offences[0]?.table).toBe('organizations')
+  })
+
+  it('treats an actor as a tenant, because that is what an actor is', () => {
+    // The fifth bug, verbatim. RLS does not confine an owner connection, so
+    // this said yes to another tenant's project and a company admin could
+    // create a record pointing at it.
+    const offences = offencesInSource(
+      'inline.ts',
+      [
+        'async function assertProjectExists(tx: Db, actor: Actor, projectId: string) {',
+        "  const { rows } = await tx.query('SELECT 1 FROM projects WHERE id = $1', [projectId])",
+        '}',
+      ].join('\n'),
+    )
+    expect(offences).toHaveLength(1)
+    expect(offences[0]?.table).toBe('projects')
   })
 
   it('does not complain where there is no tenant to use', () => {

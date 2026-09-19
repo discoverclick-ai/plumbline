@@ -1,7 +1,14 @@
 # Contract Intelligence and the Notice Clock
 
-Status: proposed. Nothing here is built yet.
+Status: stages A and C are built and tested; stage B is built except for the model that feeds it; D and E are not started.
+
+Built: `contract_documents`, `contract_clauses`, `project_calendars`, `project_holidays` (migration 0030); `contract_obligations`, `obligation_clocks`, `clock_engine_cursor` and the `notice` record type (0031). Deterministic segmentation, the quote gate, the deadline arithmetic with its frozen computation, the event-log clock engine with idempotent firing, promotion, expiry and discharge, obligation review with flow-down, API routes, and the contract profile screen.
+
+Not built: the extraction model behind the screen and extract passes (the seam is there, nothing calls a provider yet), notice drafting, the claim file, and the statutory deadline dataset.
+
 Depends on: the record kernel, ball in court, the capture pipeline and the approval gate, all of which exist.
+
+Two things this document got wrong, corrected in the build rather than here: the notice workflow had `drafted` holding with the assignee, which stranded a drafter who lacked the `issue` privilege while the window ran out (it holds with the approver now), and the clause-text permission was specified as a separate `view_terms` gate on top of instrument visibility, which would have stopped a subcontractor reading the subcontract they signed. Being a party to an instrument is the right to read it; `view_terms` extends that to instruments you are not a party to.
 
 ## 1. Why this and not something else
 

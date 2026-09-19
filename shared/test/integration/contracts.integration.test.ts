@@ -354,6 +354,32 @@ describe('the clock', () => {
   })
 })
 
+describe('the on-demand sweep', () => {
+  it('runs one project without consuming another tenant\u2019s backlog', async () => {
+    const before = await pool.query('SELECT last_event_id FROM clock_engine_cursor WHERE id = 1')
+    const result = await engine.sweepProject(gcPm, projectId)
+    const after = await pool.query('SELECT last_event_id FROM clock_engine_cursor WHERE id = 1')
+
+    // Idempotent: everything on this project has already fired.
+    expect(result.fired.started).toBe(0)
+    expect(result.fired.skipped).toEqual([])
+    // And the global cursor is untouched, which is what stops one tenant's
+    // button doing another tenant's work.
+    expect(after.rows[0]!.last_event_id).toBe(before.rows[0]!.last_event_id)
+  })
+
+  it('refuses somebody who is not on the project', async () => {
+    const other = await provisionTenant(pool, {
+      tenantName: 'Unrelated Builders',
+      organizationKind: 'general_contractor',
+      admin: { email: 'admin@unrelated.test', name: 'Una Admin', password: 'correct horse battery staple' },
+    })
+    await expect(
+      engine.sweepProject({ tenantId: other.tenantId, userId: other.adminUserId }, projectId),
+    ).rejects.toThrow()
+  })
+})
+
 describe('flow-down', () => {
   it('copies a parent’s obligations as proposals, never as accepted rows', async () => {
     const prime = await contracts.createDocument(gcPm, {

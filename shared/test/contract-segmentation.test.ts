@@ -111,6 +111,21 @@ describe('segmenting a contract nobody wrote for us', () => {
     expect(result.clauses).toHaveLength(3)
   })
 
+  it('reads a two-clause amendment, which is a real document', () => {
+    const amendment =
+      'AMENDMENT NO. 2\n\n4.7.1 The notice period is extended to ten days.\n\n4.7.2 All other terms are unchanged.'
+    const result = segment(amendment)
+    expect(result.scheme).toBe('decimal')
+    expect(result.clauses.map((c) => c.clauseNumber)).toEqual([null, '4.7.1', '4.7.2'])
+  })
+
+  it('does not call one stray number a clause scheme', () => {
+    // A single decimal at the start of a line is what a price list or a
+    // measurement looks like. One is not evidence.
+    const prose = 'The parties agree as follows.\n1.5 percent per month shall accrue on late payment.'
+    expect(segment(prose).needsManualSegmentation).toBe(true)
+  })
+
   it('refuses to guess at a document it cannot read', () => {
     // Scanned paper, and owner-drafted forms that number nothing. The right
     // answer is a visible gap, not a confident carve-up.

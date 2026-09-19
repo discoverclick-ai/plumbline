@@ -144,6 +144,79 @@ export interface CommitmentView {
   currentValue: string
 }
 
+/**
+ * A contract instrument, as much of one as this person may know about.
+ *
+ * The list a trade partner gets back is not the list a general contractor
+ * gets back, and that is the server's decision, not this client's. Nothing
+ * here filters.
+ */
+export interface ContractDocumentView {
+  id: string
+  projectId: string
+  kind: string
+  title: string
+  counterpartyOrgId: string | null
+  parentDocumentId: string | null
+  executedAt: string | null
+  effectiveAt: string | null
+  status: string
+  clauseCount: number
+  version: number
+}
+
+export interface ClauseView {
+  id: string
+  clauseNumber: string | null
+  heading: string | null
+  text: string
+  page: number | null
+  orderIndex: number
+}
+
+export interface ObligationView {
+  id: string
+  documentId: string
+  clauseId: string
+  clauseNumber: string | null
+  quote: string
+  obligationType: string
+  triggerDescription: string
+  durationValue: number
+  durationUnit: string
+  deadlineBasis: string
+  consequence: string
+  confidence: string | null
+  rationale: string | null
+  status: 'proposed' | 'accepted' | 'rejected' | 'superseded'
+  inheritedFromId: string | null
+}
+
+/**
+ * A running deadline.
+ *
+ * Carries the clause NUMBER and never the clause text: a superintendent needs
+ * to know a notice is due today, and does not need the prime's indemnity
+ * language to find that out.
+ */
+export interface ClockView {
+  id: string
+  state: 'watching' | 'in_court' | 'satisfied' | 'expired' | 'tolled' | 'waived' | 'cancelled'
+  obligationType: string
+  consequence: string
+  clauseNumber: string | null
+  triggerDescription: string
+  startedAt: string
+  dueAt: string
+  warnAt: string
+  noticeRecordId: string | null
+  noticeDesignation: string | null
+  noticeStatus: string | null
+  triggerDesignation: string | null
+  triggerTitle: string | null
+  computation: Record<string, unknown>
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -290,6 +363,35 @@ export class ApiClient {
     edits: { title?: string; body?: Record<string, unknown> } = {},
   ): Promise<{ proposal: ProposalView; record: RecordView }> {
     return this.request('POST', `/proposals/${proposalId}/accept`, edits)
+  }
+
+  contracts(projectId: string): Promise<{ documents: ContractDocumentView[] }> {
+    return this.request('GET', `/projects/${projectId}/contracts`)
+  }
+
+  clauses(documentId: string): Promise<{ clauses: ClauseView[] }> {
+    return this.request('GET', `/contracts/${documentId}/clauses`)
+  }
+
+  obligations(documentId: string, status?: string): Promise<{ obligations: ObligationView[] }> {
+    const suffix = status ? `?status=${status}` : ''
+    return this.request('GET', `/contracts/${documentId}/obligations${suffix}`)
+  }
+
+  acceptObligation(obligationId: string): Promise<{ ok: true }> {
+    return this.request('POST', `/obligations/${obligationId}/accept`)
+  }
+
+  rejectObligation(obligationId: string): Promise<{ ok: true }> {
+    return this.request('POST', `/obligations/${obligationId}/reject`)
+  }
+
+  clocks(projectId: string): Promise<{ clocks: ClockView[] }> {
+    return this.request('GET', `/projects/${projectId}/clocks`)
+  }
+
+  sweepClocks(projectId: string): Promise<unknown> {
+    return this.request('POST', `/projects/${projectId}/clocks/sweep`)
   }
 
   rejectProposal(proposalId: string, note?: string): Promise<ProposalView> {

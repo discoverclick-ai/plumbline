@@ -101,7 +101,13 @@ export function audienceFor(item: OverdueItem, level: EscalationRule['level']): 
  * else's agent can call it with a project id it guessed.
  */
 async function assertOnProject(db: Db, actor: Actor, projectId: string): Promise<void> {
-  const { rows } = await db.query('SELECT 1 FROM projects WHERE id = $1', [projectId])
+  // Filtered on the tenant, not left to row-level security: RLS confines the
+  // application role and this codebase also runs on connections it does not
+  // confine, so an unfiltered lookup answers yes for another tenant's project.
+  const { rows } = await db.query('SELECT 1 FROM projects WHERE tenant_id = $1 AND id = $2', [
+    actor.tenantId,
+    projectId,
+  ])
   if (rows.length === 0) throw new NotFoundError('project', projectId)
 
   const access = await loadAccess(db, { userId: actor.userId, tenantId: actor.tenantId, projectId })

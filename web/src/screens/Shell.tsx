@@ -5,6 +5,7 @@ import { atLeast, useSession } from '../session/SessionProvider.tsx'
 import { Banner, Button, Card, Field, Input, Pill, Spinner, Table, Tabs } from '../ui/index.js'
 import { BallInCourt } from './BallInCourt.tsx'
 import { Budget } from './Budget.tsx'
+import { Contracts } from './Contracts.tsx'
 import { CaptureInbox } from './CaptureInbox.tsx'
 import { RecordDetail } from './RecordDetail.tsx'
 import { ToolLanding } from './ToolLanding.tsx'
@@ -125,7 +126,7 @@ export function Portfolio({ onOpenProject }: { onOpenProject: (project: ProjectV
   )
 }
 
-type ProjectTab = 'work' | 'records' | 'budget' | 'inbox'
+type ProjectTab = 'work' | 'records' | 'budget' | 'contracts' | 'inbox'
 
 export function ProjectShell({ project, onLeave }: { project: ProjectView; onLeave: () => void }) {
   const { scopeToProject, loading, level } = useSession()
@@ -148,6 +149,12 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
   // Most people on a job hold `none` here, and a tab that opens onto a
   // permission error is worse than no tab.
   if (atLeast(level('budget'), 'read_only')) tabs.push({ key: 'budget', label: 'Budget' })
+  // Either half earns the tab. A superintendent holds `notices` and not
+  // `contracts`: they need to see a deadline is running without being handed
+  // the prime's indemnity language, and the screen shows each half only to
+  // whoever the server will serve it to.
+  if (atLeast(level('contracts'), 'read_only') || atLeast(level('notices'), 'read_only'))
+    tabs.push({ key: 'contracts', label: 'Contracts' })
   if (atLeast(level('capture'), 'read_only')) tabs.push({ key: 'inbox', label: 'Capture inbox' })
 
   return (
@@ -197,6 +204,7 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
             <ToolLanding projectId={project.id} projectName={project.name} onOpenRecord={setOpenRecordId} />
           )}
           {tab === 'budget' && <Budget projectId={project.id} projectName={project.name} />}
+          {tab === 'contracts' && <Contracts projectId={project.id} projectName={project.name} />}
           {tab === 'inbox' && <CaptureInbox projectId={project.id} projectName={project.name} />}
         </>
       )}

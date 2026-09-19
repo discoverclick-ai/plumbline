@@ -1,6 +1,8 @@
 import type { Db } from '../db.js'
 import { withTenant } from '../db.js'
+import { NotFoundError, PermissionDeniedError } from '../errors.js'
 import { RecordKernel, type Actor } from '../kernel.js'
+import { loadAccess } from '../repositories/permissions.js'
 import {
   computeDeadline,
   warnAt,
@@ -42,6 +44,24 @@ export interface FireResult {
   started: number
   /** Matched an obligation but could not start, with the reason. */
   skipped: { eventId: number; obligationId: string; reason: string }[]
+}
+
+export interface ClockRow {
+  id: string
+  state: 'watching' | 'in_court' | 'satisfied' | 'expired' | 'tolled' | 'waived' | 'cancelled'
+  obligationType: string
+  consequence: string
+  clauseNumber: string | null
+  triggerDescription: string
+  startedAt: string
+  dueAt: string
+  warnAt: string
+  noticeRecordId: string | null
+  noticeDesignation: string | null
+  noticeStatus: string | null
+  triggerDesignation: string | null
+  triggerTitle: string | null
+  computation: Record<string, unknown>
 }
 
 export interface PromotionResult {
@@ -86,6 +106,46 @@ export class ClockEngine {
     this.kernel = new RecordKernel(db)
   }
 
+  /**
+   * One project, on demand, without touching the global cursor.
+   *
+   * A PM who has just accepted an obligation wants to see what it would
+   * start, and a deadline subsystem nobody can force to run is one nobody
+   * trusts. Scanning from the beginning is safe because the unique index on
+   * (obligation, event) makes a second pass a no-op, and leaving the cursor
+   * alone is what stops one tenant's button consuming another tenant's work.
+   */
+  async fireForProject(actor: Actor, projectId: string): Promise<FireResult> {
+    await this.assertOnProject(actor, projectId)
+
+    const { rows: events } = await this.db.query<EventRow>(
+      `SELECT id, tenant_id, project_id, record_id, type_key, event, payload, actor_user_id, occurred_at
+         FROM record_events WHERE tenant_id = $1 AND project_id = $2 ORDER BY id`,
+      [actor.tenantId, projectId],
+    )
+    return this.process(events)
+  }
+
+  /**
+   * Everything the scheduled worker does, for one project, right now.
+   *
+   * The scope is not optional here. The worker's own passes are global
+   * because a cursor over a global log is a global thing; a request made by
+   * a person is not, and an unscoped sweep behind an HTTP route would have
+   * one tenant's button doing another tenant's work.
+   */
+  async sweepProject(
+    actor: Actor,
+    projectId: string,
+    now: Date = new Date(),
+  ): Promise<{ fired: FireResult; promoted: PromotionResult; reconciled: { satisfied: number; stoodDown: number } }> {
+    const scope = { tenantId: actor.tenantId, projectId }
+    const fired = await this.fireForProject(actor, projectId)
+    const promoted = await this.promote(now, scope)
+    const reconciled = await this.reconcile(scope)
+    return { fired, promoted, reconciled }
+  }
+
   async fire(limit = 500): Promise<FireResult> {
     const { rows: cursorRows } = await this.db.query<{ last_event_id: string }>(
       'SELECT last_event_id FROM clock_engine_cursor WHERE id = 1',
@@ -98,11 +158,21 @@ export class ClockEngine {
       [cursor, limit],
     )
 
+    const result = await this.process(events)
+    const highest = events.reduce((max, e) => Math.max(max, Number(e.id)), cursor)
+
+    if (highest > cursor) {
+      await this.db.query('UPDATE clock_engine_cursor SET last_event_id = $1, updated_at = now() WHERE id = 1', [
+        highest,
+      ])
+    }
+    return result
+  }
+
+  private async process(events: EventRow[]): Promise<FireResult> {
     const result: FireResult = { scanned: events.length, started: 0, skipped: [] }
-    let highest = cursor
 
     for (const event of events) {
-      highest = Math.max(highest, Number(event.id))
       // A notice's own events must never start clocks. Without this a notice
       // that matches a notice-of-claim trigger spawns another notice, and the
       // engine writes itself an infinite queue overnight.
@@ -111,11 +181,10 @@ export class ClockEngine {
       const obligations = await this.matching(event)
       for (const obligation of obligations) {
         try {
-          const started = await this.start(event, obligation)
-          if (started) result.started += 1
+          if (await this.start(event, obligation)) result.started += 1
         } catch (err) {
-          // Loud, and the cursor still advances. A clock that failed to start
-          // is a gap somebody has to see; a worker that retries the same
+          // Loud, and the cursor still advances past it. A clock that failed
+          // to start is a gap somebody has to see; a worker retrying the same
           // failing event forever is a gap nobody ever sees.
           result.skipped.push({
             eventId: Number(event.id),
@@ -124,12 +193,6 @@ export class ClockEngine {
           })
         }
       }
-    }
-
-    if (highest > cursor) {
-      await this.db.query('UPDATE clock_engine_cursor SET last_event_id = $1, updated_at = now() WHERE id = 1', [
-        highest,
-      ])
     }
     return result
   }
@@ -298,7 +361,7 @@ export class ClockEngine {
    * a desk before it matters, which is the difference between this and a
    * report somebody reads on a Friday.
    */
-  async promote(now: Date = new Date()): Promise<PromotionResult> {
+  async promote(now: Date = new Date(), scope?: { tenantId: string; projectId: string }): Promise<PromotionResult> {
     const { rows } = await this.db.query<{
       id: string
       tenant_id: string
@@ -316,8 +379,10 @@ export class ClockEngine {
          JOIN contract_clauses c ON c.id = o.clause_id
         WHERE k.state IN ('watching', 'in_court')
           AND (k.warn_at <= $1 OR k.due_at <= $1)
+          AND ($2::uuid IS NULL OR k.tenant_id = $2::uuid)
+          AND ($3::uuid IS NULL OR k.project_id = $3::uuid)
         ORDER BY k.due_at`,
-      [now],
+      [now, scope?.tenantId ?? null, scope?.projectId ?? null],
     )
 
     const result: PromotionResult = { promoted: 0, expired: 0 }
@@ -372,13 +437,16 @@ export class ClockEngine {
    * reason the posting worker is: the kernel does not learn about contracts,
    * and a seam that is a log survives a replay.
    */
-  async reconcile(): Promise<{ satisfied: number; stoodDown: number }> {
+  async reconcile(scope?: { tenantId: string; projectId: string }): Promise<{ satisfied: number; stoodDown: number }> {
     const { rows } = await this.db.query<{ id: string; record_id: string; to: string }>(
       `SELECT k.id, k.notice_record_id AS record_id, r.status AS to
          FROM obligation_clocks k
          JOIN records r ON r.id = k.notice_record_id
         WHERE k.state IN ('watching', 'in_court', 'expired')
-          AND r.status IN ('issued', 'acknowledged', 'not_required')`,
+          AND r.status IN ('issued', 'acknowledged', 'not_required')
+          AND ($1::uuid IS NULL OR k.tenant_id = $1::uuid)
+          AND ($2::uuid IS NULL OR k.project_id = $2::uuid)`,
+      [scope?.tenantId ?? null, scope?.projectId ?? null],
     )
 
     let satisfied = 0
@@ -397,6 +465,76 @@ export class ClockEngine {
       else stoodDown += 1
     }
     return { satisfied, stoodDown }
+  }
+
+  /**
+   * Every clock on a project, with what it is waiting on.
+   *
+   * Carries the clause NUMBER and the deadline, never the clause text. A
+   * superintendent needs to know a notice is due today; they do not need the
+   * prime's indemnity language, and this is the query that keeps those two
+   * apart.
+   */
+  async list(actor: Actor, projectId: string): Promise<ClockRow[]> {
+    await this.assertOnProject(actor, projectId)
+
+    return withTenant(this.db, actor.tenantId, async (tx) => {
+      const { rows } = await tx.query<Record<string, unknown>>(
+        `SELECT k.id, k.state::text AS state, k.started_at, k.due_at, k.warn_at,
+                k.notice_record_id, k.triggering_record_id, k.computation,
+                o.obligation_type::text AS obligation_type, o.consequence::text AS consequence,
+                o.trigger_description, c.clause_number,
+                r.designation AS notice_designation, r.status AS notice_status,
+                t.designation AS trigger_designation, t.title AS trigger_title
+           FROM obligation_clocks k
+           JOIN contract_obligations o ON o.id = k.obligation_id
+           JOIN contract_clauses c ON c.id = o.clause_id
+      LEFT JOIN records r ON r.id = k.notice_record_id
+      LEFT JOIN records t ON t.id = k.triggering_record_id
+          WHERE k.tenant_id = $1 AND k.project_id = $2
+          ORDER BY CASE k.state::text WHEN 'in_court' THEN 0 WHEN 'watching' THEN 1 ELSE 2 END, k.due_at`,
+        [actor.tenantId, projectId],
+      )
+
+      return rows.map((r) => ({
+        id: r['id'] as string,
+        state: r['state'] as ClockRow['state'],
+        obligationType: r['obligation_type'] as string,
+        consequence: r['consequence'] as string,
+        clauseNumber: (r['clause_number'] as string | null) ?? null,
+        triggerDescription: r['trigger_description'] as string,
+        startedAt: (r['started_at'] as Date).toISOString(),
+        dueAt: (r['due_at'] as Date).toISOString(),
+        warnAt: (r['warn_at'] as Date).toISOString(),
+        noticeRecordId: (r['notice_record_id'] as string | null) ?? null,
+        noticeDesignation: (r['notice_designation'] as string | null) ?? null,
+        noticeStatus: (r['notice_status'] as string | null) ?? null,
+        triggerDesignation: (r['trigger_designation'] as string | null) ?? null,
+        triggerTitle: (r['trigger_title'] as string | null) ?? null,
+        computation: r['computation'] as Record<string, unknown>,
+      }))
+    })
+  }
+
+  private async assertOnProject(actor: Actor, projectId: string): Promise<void> {
+    await withTenant(this.db, actor.tenantId, async (tx) => {
+      // Existence first, and under this tenant's row-level security, so a
+      // project id from another tenant is NOT FOUND rather than allowed.
+      // Company admins bypass the membership check, which is the escalation
+      // path everywhere else in this system, and without this line that
+      // bypass handed them a cheerful empty result for somebody else's
+      // project id instead of a refusal.
+      const { rows } = await tx.query('SELECT 1 FROM projects WHERE tenant_id = $1 AND id = $2', [
+        actor.tenantId,
+        projectId,
+      ])
+      if (rows.length === 0) throw new NotFoundError('project', projectId)
+
+      const access = await loadAccess(tx, { userId: actor.userId, tenantId: actor.tenantId, projectId })
+      if (!access.isProjectMember && !access.isCompanyAdmin) {
+        throw new PermissionDeniedError('You are not on this project')
+      }
+    })
   }
 
   private async calendarFor(tenantId: string, projectId: string): Promise<ProjectCalendar> {

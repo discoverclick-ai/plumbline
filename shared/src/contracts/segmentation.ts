@@ -61,7 +61,11 @@ export function segment(text: string): SegmentationResult {
   let chosen: NumberedLine[] = []
   let scheme: SegmentationResult['scheme'] = null
 
-  if (decimal.length >= 3) {
+  // Two hierarchical numbers is already strong evidence: "4.7.1" and "4.7.2"
+  // at the start of consecutive paragraphs is not something prose does by
+  // accident. Requiring three declared a two-clause amendment unreadable,
+  // which is a real document and a common one.
+  if (decimal.length >= 2) {
     chosen = merge(decimal, article)
     scheme = 'decimal'
   } else if (article.length >= 2) {

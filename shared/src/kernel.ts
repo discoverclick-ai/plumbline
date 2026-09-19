@@ -79,7 +79,7 @@ export class RecordKernel {
   async create(actor: Actor, input: CreateRecordInput): Promise<RecordView> {
     return withTenant(this.db, actor.tenantId, async (tx) => {
       const type = await getRecordType(tx, input.typeKey)
-      await assertProjectExists(tx, input.projectId)
+      await assertProjectExists(tx, actor.tenantId, input.projectId)
       const access = await loadAccess(tx, {
         userId: actor.userId,
         tenantId: actor.tenantId,
@@ -339,7 +339,7 @@ export class RecordKernel {
 
   async list(actor: Actor, filter: repo.ListRecordsFilter): Promise<ConstructionRecord[]> {
     return withTenant(this.db, actor.tenantId, async (tx) => {
-      await assertProjectExists(tx, filter.projectId)
+      await assertProjectExists(tx, actor.tenantId, filter.projectId)
       const access = await loadAccess(tx, {
         userId: actor.userId,
         tenantId: actor.tenantId,
@@ -606,7 +606,7 @@ export class RecordKernel {
       })
 
       if (filter.projectId) {
-        await assertProjectExists(tx, filter.projectId)
+        await assertProjectExists(tx, actor.tenantId, filter.projectId)
         if (!access.isProjectMember && !access.isCompanyAdmin) {
           throw new PermissionDeniedError('You are not on this project')
         }
@@ -743,8 +743,17 @@ function describeOrgKind(kind: string): string {
   return kind.replace(/_/g, ' ') + 's'
 }
 
-async function assertProjectExists(tx: Db, projectId: string): Promise<void> {
-  const { rows } = await tx.query('SELECT 1 FROM projects WHERE id = $1', [projectId])
+/**
+ * Tenant-filtered, and it has to be.
+ *
+ * Row-level security only binds the `plumbline_app` role; a pool connected as
+ * the owner is not confined by it. So an unfiltered lookup here said yes to
+ * another tenant's project id, and a company admin could then create a record
+ * in their own tenant pointing at a project in somebody else's. The filter is
+ * the boundary. RLS is the second line, never the first.
+ */
+async function assertProjectExists(tx: Db, tenantId: string, projectId: string): Promise<void> {
+  const { rows } = await tx.query('SELECT 1 FROM projects WHERE tenant_id = $1 AND id = $2', [tenantId, projectId])
   if (rows.length === 0) throw new NotFoundError('project', projectId)
 }
 

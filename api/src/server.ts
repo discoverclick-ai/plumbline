@@ -4,8 +4,11 @@ import {
   AttachmentService,
   authenticate,
   DrawingService,
+  ClockEngine,
+  ContractService,
   EscalationService,
   McpToolRunner,
+  ObligationService,
   TOOLS,
   SyncService,
   BudgetService,
@@ -70,6 +73,9 @@ interface RequestContext {
   drawings: DrawingService
   sync: SyncService
   escalations: EscalationService
+  contracts: ContractService
+  obligations: ObligationService
+  clocks: ClockEngine
   mcp: McpToolRunner
   commitments: CommitmentService
   invoicing: InvoicingService
@@ -723,6 +729,116 @@ const ROUTES: Route[] = [
     }),
   })),
 
+  // ---------------------------------------------------------------------
+  // Contracts, obligations and the notice clock
+  // ---------------------------------------------------------------------
+
+  route('GET', '/projects/:projectId/contracts', async ({ actor, params, contracts }) => ({
+    documents: await contracts.listDocuments(actor, params['projectId'] as string),
+  })),
+
+  route('POST', '/projects/:projectId/contracts', async ({ actor, params, body, contracts }) =>
+    contracts.createDocument(actor, {
+      projectId: params['projectId'] as string,
+      kind: body['kind'] as Parameters<ContractService['createDocument']>[1]['kind'],
+      title: String(body['title'] ?? ''),
+      ...(body['counterpartyOrgId'] ? { counterpartyOrgId: String(body['counterpartyOrgId']) } : {}),
+      ...(body['parentDocumentId'] ? { parentDocumentId: String(body['parentDocumentId']) } : {}),
+      ...(body['executedAt'] ? { executedAt: String(body['executedAt']) } : {}),
+      ...(body['effectiveAt'] ? { effectiveAt: String(body['effectiveAt']) } : {}),
+    }),
+  ),
+
+  route('POST', '/contracts/:documentId/segment', async ({ actor, params, body, contracts }) =>
+    contracts.segmentDocument(actor, params['documentId'] as string, String(body['text'] ?? '')),
+  ),
+
+  route('GET', '/contracts/:documentId/clauses', async ({ actor, params, contracts }) => ({
+    clauses: await contracts.clauses(actor, params['documentId'] as string),
+  })),
+
+  route('GET', '/contracts/:documentId/lineage', async ({ actor, params, contracts }) => ({
+    lineage: await contracts.lineage(actor, params['documentId'] as string),
+  })),
+
+  route('GET', '/contracts/:documentId/obligations', async ({ actor, params, query, obligations }) => ({
+    obligations: await obligations.list(actor, {
+      documentId: params['documentId'] as string,
+      ...(query.get('status') ? { status: query.get('status') as string } : {}),
+    }),
+  })),
+
+  route('POST', '/contracts/:documentId/obligations', async ({ actor, params, body, obligations }) =>
+    obligations.propose(
+      actor,
+      params['documentId'] as string,
+      (body['obligations'] ?? []) as Parameters<ObligationService['propose']>[2],
+    ),
+  ),
+
+  route('POST', '/contracts/:documentId/flow-down', async ({ actor, params, obligations }) =>
+    obligations.flowDown(actor, params['documentId'] as string),
+  ),
+
+  route('POST', '/obligations/:obligationId/accept', async ({ actor, params, obligations }) => {
+    await obligations.accept(actor, params['obligationId'] as string)
+    return { ok: true }
+  }),
+
+  route('POST', '/obligations/:obligationId/reject', async ({ actor, params, obligations }) => {
+    await obligations.reject(actor, params['obligationId'] as string)
+    return { ok: true }
+  }),
+
+  route('GET', '/projects/:projectId/obligations', async ({ actor, params, query, obligations }) => ({
+    obligations: await obligations.list(actor, {
+      projectId: params['projectId'] as string,
+      ...(query.get('status') ? { status: query.get('status') as string } : {}),
+    }),
+  })),
+
+  route('GET', '/projects/:projectId/calendar', async ({ actor, params, contracts }) =>
+    contracts.calendar(actor, params['projectId'] as string),
+  ),
+
+  route('PUT', '/projects/:projectId/calendar', async ({ actor, params, body, contracts }) => {
+    await contracts.setCalendar(actor, params['projectId'] as string, {
+      ...(Array.isArray(body['workDays']) ? { workDays: (body['workDays'] as number[]).map(Number) } : {}),
+      ...(body['timeZone'] ? { timeZone: String(body['timeZone']) } : {}),
+      ...(body['dayDefinition'] ? { dayDefinition: String(body['dayDefinition']) } : {}),
+    })
+    return { ok: true }
+  }),
+
+  route('POST', '/projects/:projectId/calendar/holidays', async ({ actor, params, body, contracts }) => {
+    await contracts.addHoliday(
+      actor,
+      params['projectId'] as string,
+      String(body['observedOn'] ?? ''),
+      String(body['name'] ?? ''),
+    )
+    return { ok: true }
+  }),
+
+  route('GET', '/projects/:projectId/clocks', async ({ actor, params, clocks }) => ({
+    clocks: await clocks.list(actor, params['projectId'] as string),
+  })),
+
+  /**
+   * The engine, on demand.
+   *
+   * It is a worker and it runs on a schedule; this exists because a PM who
+   * has just accepted an obligation wants to see the clocks it would start
+   * without waiting for the next tick, and because a deadline subsystem
+   * nobody can force to run is one nobody will trust.
+   */
+  route('POST', '/projects/:projectId/clocks/sweep', async ({ actor, params, clocks }) =>
+    // Scoped, and deliberately not advancing the global cursor: one tenant
+    // pressing a button must not consume another tenant's backlog. The unique
+    // index on (obligation, event) is what makes a full re-scan a no-op.
+    clocks.sweepProject(actor, params['projectId'] as string),
+  ),
+
   route('POST', '/escalations/:escalationId/approve', async ({ actor, params, escalations }) => {
     await escalations.approve(actor, params['escalationId'] as string)
     return { ok: true }
@@ -805,6 +921,9 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
   const budgetService = new BudgetService(pool as Db)
   const syncService = new SyncService(pool as Db)
   const escalationService = new EscalationService(pool as Db)
+  const contractService = new ContractService(pool as Db)
+  const obligationService = new ObligationService(pool as Db)
+  const clockEngine = new ClockEngine(pool as Db)
   const mcpRunner = new McpToolRunner(pool as Db)
   const commitmentService = new CommitmentService(pool as Db)
   const invoicingService = new InvoicingService(pool as Db)
@@ -879,6 +998,9 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           drawings: drawingService(),
           sync: syncService,
           escalations: escalationService,
+          contracts: contractService,
+          obligations: obligationService,
+          clocks: clockEngine,
           mcp: mcpRunner,
           commitments: commitmentService,
           invoicing: invoicingService,
