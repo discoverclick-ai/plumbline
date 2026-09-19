@@ -2,6 +2,7 @@ import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 import {
   addProjectMember,
+  createBudgetCode,
   createOrganization,
   createPool,
   createProject,
@@ -52,6 +53,7 @@ let architectToken: string
 let tradeToken: string
 let projectId: string
 let architectUserId: string
+let tenant: { tenantId: string; organizationId: string; adminUserId: string }
 
 const PASSWORD = 'a-long-enough-password'
 
@@ -71,6 +73,28 @@ async function call(
   return { status: res.status, body: await res.json() }
 }
 
+/** Bytes in, bytes out, plus the response headers a download depends on. */
+async function raw(
+  method: string,
+  path: string,
+  options: { token?: string; contentType?: string; headers?: Record<string, string>; body?: Buffer } = {},
+): Promise<{ status: number; headers: Record<string, string>; bytes: Buffer }> {
+  const res = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: {
+      ...(options.contentType ? { 'content-type': options.contentType } : {}),
+      ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
+      ...(options.headers ?? {}),
+    },
+    ...(options.body === undefined ? {} : { body: new Uint8Array(options.body) }),
+  })
+  return {
+    status: res.status,
+    headers: Object.fromEntries(res.headers.entries()),
+    bytes: Buffer.from(await res.arrayBuffer()),
+  }
+}
+
 async function signIn(email: string): Promise<string> {
   const res = await call('POST', '/auth/sign-in', { body: { email, password: PASSWORD } })
   expect(res.status).toBe(200)
@@ -83,7 +107,7 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 
-  const tenant = await provisionTenant(pool, {
+  tenant = await provisionTenant(pool, {
     tenantName: 'Cross Creek Construction',
     admin: { email: 'admin@crosscreek.test', name: 'Avery Admin', password: PASSWORD },
   })
@@ -342,5 +366,118 @@ describe('the capture pipeline', () => {
     const stats = await call('GET', `/projects/${projectId}/capture-stats`, { token: pmToken })
     expect(stats.body.accepted).toBeGreaterThan(0)
     expect(stats.body.costMicros).toBeGreaterThan(0)
+  })
+})
+
+describe('the money, over HTTP', () => {
+  it('walks a budget line, a signed subcontract and an invoice through the API', async () => {
+    // A budget code, made the way the WBS module makes them.
+    const codeId = (
+      await createBudgetCode(pool, tenant.tenantId, {
+        projectId,
+        values: { cost_code: '26 00 00', cost_type: 'S' },
+      })
+    ).id
+
+    const line = await call('POST', `/projects/${projectId}/budget/lines`, {
+      token: pmToken,
+      body: { budgetCodeId: codeId, description: 'Electrical', originalAmount: '400000.00' },
+    })
+    expect(line.status).toBe(200)
+
+    const budget = await call('GET', `/projects/${projectId}/budget`, { token: pmToken })
+    expect(budget.body.lines[0].currentBudget).toBe('400000.00')
+    // Nothing is committed until somebody signs something.
+    expect(budget.body.lines[0].committedCost).toBe('0')
+
+    const vendorOrgId = await withTenant(pool, tenant.tenantId, (tx) =>
+      createOrganization(tx, tenant.tenantId, { name: 'Api Electric', kind: 'specialty_contractor' }),
+    )
+    const commitment = await call('POST', `/projects/${projectId}/commitments`, {
+      token: pmToken,
+      body: {
+        kind: 'subcontract',
+        number: 'SC-API-1',
+        title: 'Electrical',
+        vendorOrgId,
+        retainagePercent: '10.00',
+        lines: [{ budgetCodeId: codeId, description: 'Rough-in', amount: '200000.00' }],
+      },
+    })
+    expect(commitment.status).toBe(200)
+
+    const executed = await call('POST', `/commitments/${commitment.body.id}/execute`, { token: pmToken, body: {} })
+    expect(executed.status).toBe(200)
+
+    const afterSigning = await call('GET', `/projects/${projectId}/budget`, { token: pmToken })
+    expect(afterSigning.body.lines[0].committedCost).toBe('200000.00')
+
+    const billing = await call('GET', `/commitments/${commitment.body.id}/invoices`, { token: pmToken })
+    const invoice = await call('POST', `/commitments/${commitment.body.id}/invoices`, {
+      token: pmToken,
+      body: {
+        number: '1',
+        periodStart: '2026-04-01',
+        periodEnd: '2026-04-30',
+        lines: [
+          { commitmentLineId: billing.body.lines[0].commitmentLineId, amount: '50000.00', retainageAmount: '5000.00' },
+        ],
+      },
+    })
+    expect(invoice.status).toBe(200)
+
+    // Over-billing is refused at the API too, with the remaining balance.
+    const tooMuch = await call('POST', `/commitments/${commitment.body.id}/invoices`, {
+      token: pmToken,
+      body: {
+        number: '2',
+        periodStart: '2026-05-01',
+        periodEnd: '2026-05-31',
+        lines: [{ commitmentLineId: billing.body.lines[0].commitmentLineId, amount: '200000.00' }],
+      },
+    })
+    expect(tooMuch.status).toBe(422)
+    expect(JSON.stringify(tooMuch.body)).toContain('150000.00')
+  })
+
+  it('keeps a trade partner out of the budget entirely', async () => {
+    const res = await call('GET', `/projects/${projectId}/budget`, { token: tradeToken })
+    expect(res.status).toBe(403)
+  })
+})
+
+describe('attachments, over HTTP', () => {
+  it('uploads raw bytes and hands them back with a download disposition', async () => {
+    const created = await call('POST', `/projects/${projectId}/records`, {
+      token: pmToken,
+      body: {
+        typeKey: 'observation',
+        title: 'Attachment round trip',
+        body: { description: 'Something worth a photo.', observation_type: 'Quality' },
+      },
+    })
+
+    const pdf = Buffer.from('%PDF-1.7 sketch')
+    const upload = await raw('POST', `/records/${created.body.record.id}/attachments`, {
+      token: pmToken,
+      contentType: 'application/pdf',
+      headers: { 'x-filename': encodeURIComponent('SK-12 detail.pdf') },
+      body: pdf,
+    })
+    // This is the assertion that would have caught `binary` being dropped in
+    // the route builder: without it the upload goes through the JSON parser.
+    expect(upload.status).toBe(200)
+
+    const listed = await call('GET', `/records/${created.body.record.id}/attachments`, { token: pmToken })
+    expect(listed.body.attachments[0].filename).toBe('SK-12 detail.pdf')
+
+    const download = await raw('GET', `/attachments/${listed.body.attachments[0].id}`, { token: pmToken })
+    expect(download.status).toBe(200)
+    expect(download.headers['content-type']).toBe('application/pdf')
+    // Always an attachment, never inline: an HTML or SVG rendered inline
+    // would run in this origin and every party on the job can upload.
+    expect(download.headers['content-disposition']).toContain('attachment;')
+    expect(download.headers['x-content-type-options']).toBe('nosniff')
+    expect(download.bytes.equals(pdf)).toBe(true)
   })
 })

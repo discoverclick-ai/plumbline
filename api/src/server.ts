@@ -3,6 +3,9 @@ import {
   AnthropicInterpretationProvider,
   AttachmentService,
   authenticate,
+  BudgetService,
+  CommitmentService,
+  InvoicingService,
   CaptureService,
   FilesystemBlobStore,
   MAX_UPLOAD_BYTES,
@@ -56,6 +59,9 @@ interface RequestContext {
   kernel: RecordKernel
   capture: CaptureService
   attachments: AttachmentService
+  budget: BudgetService
+  commitments: CommitmentService
+  invoicing: InvoicingService
   db: Pool
   res: ServerResponse
 }
@@ -69,7 +75,11 @@ function route(
   const pattern = new RegExp(
     `^${path.replace(/:[a-zA-Z]+/g, (m) => `(?<${m.slice(1)}>[^/]+)`).replace(/\//g, '\\/')}$`,
   )
-  return { method, pattern, handler, public: options.public === true }
+  // Both options have to be carried through. An earlier version dropped
+  // `binary`, which silently sent every attachment upload through the JSON
+  // body parser: the service was tested and the route was not, so the bug
+  // lived behind a passing suite.
+  return { method, pattern, handler, public: options.public === true, binary: options.binary === true }
 }
 
 const ROUTES: Route[] = [
@@ -398,6 +408,135 @@ const ROUTES: Route[] = [
     })),
   })),
 
+  /**
+   * The money.
+   *
+   * Every figure here comes out of a view rather than a column, so these
+   * routes are thin even by the standard of the rest of this file: there is
+   * no arithmetic to do on the way past, which is the point.
+   */
+  route('GET', '/projects/:projectId/budget', async ({ actor, params, budget }) => ({
+    lines: await budget.summary(actor, params['projectId'] as string),
+  })),
+
+  route('POST', '/projects/:projectId/budget/lines', async ({ actor, params, body, budget }) =>
+    budget.addLine(actor, {
+      projectId: params['projectId'] as string,
+      budgetCodeId: body['budgetCodeId'] as string,
+      description: body['description'] as string | undefined,
+      originalAmount: String(body['originalAmount'] ?? ''),
+      unitOfMeasure: body['unitOfMeasure'] as string | undefined,
+      originalQuantity: body['originalQuantity'] as string | undefined,
+    }),
+  ),
+
+  route('POST', '/budget-lines/:budgetLineId/revisions', async ({ actor, params, body, budget }) => {
+    await budget.revise(actor, {
+      budgetLineId: params['budgetLineId'] as string,
+      amount: String(body['amount'] ?? ''),
+      reason: String(body['reason'] ?? ''),
+      ...(body['sourceRecordId'] ? { sourceRecordId: body['sourceRecordId'] as string } : {}),
+    })
+    return { ok: true }
+  }),
+
+  route('POST', '/projects/:projectId/costs', async ({ actor, params, body, budget }) =>
+    budget.recordCost(actor, {
+      projectId: params['projectId'] as string,
+      budgetCodeId: body['budgetCodeId'] as string,
+      kind: body['kind'] as 'committed' | 'actual' | 'pending' | 'forecast',
+      amount: String(body['amount'] ?? ''),
+      description: body['description'] as string | undefined,
+      ...(body['sourceRecordId'] ? { sourceRecordId: body['sourceRecordId'] as string } : {}),
+      ...(body['incurredOn'] ? { incurredOn: body['incurredOn'] as string } : {}),
+    }),
+  ),
+
+  route('GET', '/projects/:projectId/commitments', async ({ actor, params, commitments }) => ({
+    commitments: await commitments.summary(actor, params['projectId'] as string),
+  })),
+
+  route('POST', '/projects/:projectId/commitments', async ({ actor, params, body, commitments }) =>
+    commitments.create(actor, {
+      projectId: params['projectId'] as string,
+      kind: body['kind'] as 'subcontract' | 'purchase_order',
+      number: String(body['number'] ?? ''),
+      title: String(body['title'] ?? ''),
+      vendorOrgId: String(body['vendorOrgId'] ?? ''),
+      ...(body['retainagePercent'] ? { retainagePercent: String(body['retainagePercent']) } : {}),
+      lines: (body['lines'] ?? []) as { budgetCodeId: string; description: string; amount: string }[],
+    }),
+  ),
+
+  route('POST', '/commitments/:commitmentId/execute', async ({ actor, params, body, commitments }) => {
+    await commitments.execute(actor, params['commitmentId'] as string, body['executedOn'] as string | undefined)
+    return { ok: true }
+  }),
+
+  route('POST', '/commitments/:commitmentId/change-orders', async ({ actor, params, body, commitments }) =>
+    commitments.addChangeOrder(actor, {
+      commitmentId: params['commitmentId'] as string,
+      number: String(body['number'] ?? ''),
+      title: String(body['title'] ?? ''),
+      ...(body['sourceRecordId'] ? { sourceRecordId: body['sourceRecordId'] as string } : {}),
+      lines: (body['lines'] ?? []) as { budgetCodeId: string; description: string; amount: string }[],
+    }),
+  ),
+
+  route('POST', '/commitment-change-orders/:changeOrderId/execute', async ({ actor, params, body, commitments }) => {
+    await commitments.executeChangeOrder(
+      actor,
+      params['changeOrderId'] as string,
+      body['executedOn'] as string | undefined,
+    )
+    return { ok: true }
+  }),
+
+  route('GET', '/commitments/:commitmentId/invoices', async ({ actor, params, invoicing }) => ({
+    invoices: await invoicing.summary(actor, params['commitmentId'] as string),
+    lines: await invoicing.lineBilling(actor, params['commitmentId'] as string),
+  })),
+
+  route('POST', '/commitments/:commitmentId/invoices', async ({ actor, params, body, invoicing }) =>
+    invoicing.createInvoice(actor, {
+      commitmentId: params['commitmentId'] as string,
+      number: String(body['number'] ?? ''),
+      periodStart: String(body['periodStart'] ?? ''),
+      periodEnd: String(body['periodEnd'] ?? ''),
+      lines: (body['lines'] ?? []) as { commitmentLineId: string; amount: string; retainageAmount?: string }[],
+    }),
+  ),
+
+  route('POST', '/invoices/:invoiceId/submit', async ({ actor, params, invoicing }) => {
+    await invoicing.submit(actor, params['invoiceId'] as string)
+    return { ok: true }
+  }),
+
+  route('POST', '/invoices/:invoiceId/approve', async ({ actor, params, invoicing }) => {
+    await invoicing.approve(actor, params['invoiceId'] as string)
+    return { ok: true }
+  }),
+
+  route('POST', '/invoices/:invoiceId/reject', async ({ actor, params, body, invoicing }) => {
+    await invoicing.reject(actor, params['invoiceId'] as string, String(body['reason'] ?? ''))
+    return { ok: true }
+  }),
+
+  route('POST', '/invoices/:invoiceId/lien-waiver', async ({ actor, params, invoicing }) => {
+    await invoicing.recordLienWaiver(actor, params['invoiceId'] as string)
+    return { ok: true }
+  }),
+
+  route('POST', '/invoices/:invoiceId/pay', async ({ actor, params, invoicing }) => {
+    await invoicing.markPaid(actor, params['invoiceId'] as string)
+    return { ok: true }
+  }),
+
+  route('POST', '/invoice-lines/:invoiceLineId/release-retainage', async ({ actor, params, body, invoicing }) => {
+    await invoicing.releaseRetainage(actor, params['invoiceLineId'] as string, String(body['amount'] ?? ''))
+    return { ok: true }
+  }),
+
   route('GET', '/ball-in-court', async ({ kernel, actor, query }) => {
     const entries = await kernel.ballInCourt(actor, {
       ...(query.get('projectId') ? { projectId: query.get('projectId') as string } : {}),
@@ -465,6 +604,12 @@ export interface ApiServerOptions {
 export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Server {
   const kernel = new RecordKernel(pool as Db)
 
+  // Stateless over the pool, so unlike capture there is nothing to construct
+  // lazily and no credential to resolve.
+  const budgetService = new BudgetService(pool as Db)
+  const commitmentService = new CommitmentService(pool as Db)
+  const invoicingService = new InvoicingService(pool as Db)
+
   let attachmentService: AttachmentService | null = null
   const attachments = (): AttachmentService => {
     attachmentService ??= new AttachmentService(
@@ -520,6 +665,9 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           kernel,
           capture: capture(),
           attachments: attachments(),
+          budget: budgetService,
+          commitments: commitmentService,
+          invoicing: invoicingService,
           db: pool,
           res,
         })
