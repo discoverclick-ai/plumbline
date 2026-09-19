@@ -1,6 +1,7 @@
 export * from './auth.js'
 export * from './db.js'
 export * from './errors.js'
+export * from './financial-posting.js'
 export * from './invoicing.js'
 export * from './kernel.js'
 export * from './permissions.js'

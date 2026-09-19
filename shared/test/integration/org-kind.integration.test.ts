@@ -274,6 +274,15 @@ describe('T&M tickets, the first type that belongs to one side of the contract',
   })
 })
 
+/** Versions move as migrations land, so nothing here pins an absolute one. */
+async function currentVersion(): Promise<number> {
+  const { rows } = await pool.query<{ version: number }>(
+    'SELECT version FROM record_types WHERE key = $1',
+    ['t_and_m_ticket'],
+  )
+  return rows[0]?.version as number
+}
+
 describe('publishing a new definition over live records', () => {
   it('refuses a change that would strand real records, and names them', async () => {
     const kernel = new RecordKernel(pool)
@@ -292,7 +301,7 @@ describe('publishing a new definition over live records', () => {
       },
     )
 
-    const current = await getDefinitionAtVersion(pool, 't_and_m_ticket', 1)
+    const current = await getDefinitionAtVersion(pool, 't_and_m_ticket', await currentVersion())
     expect(current).not.toBeNull()
 
     // Drop the state those records are sitting in.
@@ -306,6 +315,7 @@ describe('publishing a new definition over live records', () => {
       },
     }
 
+    const versionBefore = await currentVersion()
     const failure = await publishRecordType(pool, 't_and_m_ticket', mutilated).catch((err: unknown) => err)
     expect(failure).toBeInstanceOf(ValidationError)
     const issues = (failure as ValidationError).issues
@@ -317,24 +327,25 @@ describe('publishing a new definition over live records', () => {
       'SELECT version FROM record_types WHERE key = $1',
       ['t_and_m_ticket'],
     )
-    expect(rows[0]?.version).toBe(1)
+    expect(rows[0]?.version).toBe(versionBefore)
   })
 
   it('publishes a safe change and keeps the old definition readable', async () => {
-    const current = await getDefinitionAtVersion(pool, 't_and_m_ticket', 1)
+    const before = await currentVersion()
+    const current = await getDefinitionAtVersion(pool, 't_and_m_ticket', before)
     const widened = {
       ...current,
       fields: [...current!.fields, { key: 'weather', label: 'Weather', type: 'text' }],
     }
 
     const published = await publishRecordType(pool, 't_and_m_ticket', widened, { note: 'Add weather' })
-    expect(published.version).toBe(2)
+    expect(published.version).toBe(before + 1)
 
     // Version 1 is still there, so a record stamped at version 1 can still be
     // read back under the shape it was created in.
-    const v1 = await getDefinitionAtVersion(pool, 't_and_m_ticket', 1)
-    expect(v1!.fields.some((f) => f.key === 'weather')).toBe(false)
-    const v2 = await getDefinitionAtVersion(pool, 't_and_m_ticket', 2)
-    expect(v2!.fields.some((f) => f.key === 'weather')).toBe(true)
+    const previous = await getDefinitionAtVersion(pool, 't_and_m_ticket', before)
+    expect(previous!.fields.some((f) => f.key === 'weather')).toBe(false)
+    const next = await getDefinitionAtVersion(pool, 't_and_m_ticket', before + 1)
+    expect(next!.fields.some((f) => f.key === 'weather')).toBe(true)
   })
 })
