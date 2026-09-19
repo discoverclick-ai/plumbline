@@ -6,6 +6,7 @@ import { Banner, Button, Card, Field, Input, Pill, Spinner, Table, Tabs } from '
 import { BallInCourt } from './BallInCourt.tsx'
 import { Budget } from './Budget.tsx'
 import { Contracts } from './Contracts.tsx'
+import { Lookahead } from './Lookahead.tsx'
 import { CaptureInbox } from './CaptureInbox.tsx'
 import { RecordDetail } from './RecordDetail.tsx'
 import { ToolLanding } from './ToolLanding.tsx'
@@ -126,7 +127,7 @@ export function Portfolio({ onOpenProject }: { onOpenProject: (project: ProjectV
   )
 }
 
-type ProjectTab = 'work' | 'records' | 'budget' | 'contracts' | 'inbox'
+type ProjectTab = 'work' | 'records' | 'lookahead' | 'budget' | 'contracts' | 'inbox'
 
 export function ProjectShell({ project, onLeave }: { project: ProjectView; onLeave: () => void }) {
   const { scopeToProject, loading, level } = useSession()
@@ -148,6 +149,7 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
   ]
   // Most people on a job hold `none` here, and a tab that opens onto a
   // permission error is worse than no tab.
+  if (atLeast(level('schedule'), 'read_only')) tabs.push({ key: 'lookahead', label: 'Lookahead' })
   if (atLeast(level('budget'), 'read_only')) tabs.push({ key: 'budget', label: 'Budget' })
   // Either half earns the tab. A superintendent holds `notices` and not
   // `contracts`: they need to see a deadline is running without being handed
@@ -203,6 +205,7 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
           {tab === 'records' && (
             <ToolLanding projectId={project.id} projectName={project.name} onOpenRecord={setOpenRecordId} />
           )}
+          {tab === 'lookahead' && <Lookahead projectId={project.id} projectName={project.name} />}
           {tab === 'budget' && <Budget projectId={project.id} projectName={project.name} />}
           {tab === 'contracts' && <Contracts projectId={project.id} projectName={project.name} />}
           {tab === 'inbox' && <CaptureInbox projectId={project.id} projectName={project.name} />}

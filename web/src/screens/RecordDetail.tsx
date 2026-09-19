@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ApiError, type RecordView } from '../api/client.js'
+import { ApiError, type ActivityView, type RecordView } from '../api/client.js'
 import { DetailPage } from '../layouts/index.js'
 import { useSession } from '../session/SessionProvider.tsx'
 import {
@@ -14,6 +14,7 @@ import {
   Textarea,
   statusTone,
 } from '../ui/index.js'
+import { floatText, startsIn } from './Lookahead.tsx'
 import { RecordFields, toFieldValues, toRequestBody, type FieldValues } from './RecordFields.tsx'
 import type { RecordComment, RecordStateChange } from '@plumbline/shared'
 
@@ -44,6 +45,7 @@ export function RecordDetail({
   const [issues, setIssues] = useState<{ field: string; message: string }[]>([])
   const [busy, setBusy] = useState(false)
   const [comment, setComment] = useState('')
+  const [blocking, setBlocking] = useState<(ActivityView & { kind: string })[]>([])
 
   const load = useCallback(async () => {
     try {
@@ -58,6 +60,24 @@ export function RecordDetail({
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    let cancelled = false
+    // A refusal here is not an error worth showing. Most people on a job hold
+    // no schedule access at all, and a red banner on an RFI because they
+    // cannot see the programme would be noise on the screen they came for.
+    api
+      .recordActivities(recordId)
+      .then((r) => {
+        if (!cancelled) setBlocking(r.activities)
+      })
+      .catch(() => {
+        if (!cancelled) setBlocking([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [api, recordId])
 
   if (error && !view) return <Banner tone="danger">{error}</Banner>
   if (!view) return <Spinner label="Loading record" />
@@ -176,6 +196,39 @@ export function RecordDetail({
               <strong>Ball in court</strong> · {view.assignment.expectedAction}
               {view.assignment.dueAt && ` · due ${new Date(view.assignment.dueAt).toLocaleDateString()}`}
             </Banner>
+          )}
+          {/*
+            What this is holding up, above the fields rather than below them.
+            Somebody deciding whether to answer today needs to know that steel
+            starts Thursday before they read the question, not after.
+          */}
+          {blocking.length > 0 && (
+            <Card title="Holding up">
+              <div style={{ display: 'grid', gap: 8 }}>
+                {blocking.map((activity) => (
+                  <div key={activity.activityCode} style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
+                    <Pill
+                      tone={
+                        activity.isCritical
+                          ? 'danger'
+                          : Number(activity.totalFloatDays ?? 99) <= 5
+                            ? 'warn'
+                            : 'neutral'
+                      }
+                    >
+                      {floatText(activity.totalFloatDays)}
+                    </Pill>
+                    <div>
+                      <strong>{activity.name}</strong>
+                      <div style={{ fontSize: 12, color: 'var(--ink-muted)' }}>
+                        {activity.activityCode} · {startsIn(activity.startAt)}
+                        {activity.kind === 'blocks' ? '' : ` · ${activity.kind}`}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
           )}
           <Card title={type.displayName}>
             <RecordFields fields={type.fields} values={toFieldValues(view.record.body)} onChange={() => {}} readOnly />

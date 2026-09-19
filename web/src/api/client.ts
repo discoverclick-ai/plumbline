@@ -217,6 +217,41 @@ export interface ClockView {
   computation: Record<string, unknown>
 }
 
+export interface ActivityView {
+  activityCode: string
+  name: string
+  wbsPath: string | null
+  startAt: string | null
+  finishAt: string | null
+  actualStart: string | null
+  actualFinish: string | null
+  totalFloatDays: string | null
+  isCritical: boolean
+  isMilestone: boolean
+  predecessors: string[]
+}
+
+/**
+ * One line of the morning meeting.
+ *
+ * `totalFloatDays` and `longestWaitDays` next to each other is the whole
+ * screen: an RFI sitting eleven days against an activity with two days of
+ * float is not a paperwork problem, it is a delay that has already happened
+ * and nobody has said so.
+ */
+export interface ExposureView {
+  activityCode: string
+  activityName: string
+  startAt: string | null
+  finishAt: string | null
+  totalFloatDays: string | null
+  isCritical: boolean
+  openRecords: number
+  longestWaitDays: number | null
+  floatRemainingDays: number | null
+  records: { recordId: string; designation: string; title: string; status: string; holderName: string | null }[]
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -395,6 +430,22 @@ export class ApiClient {
 
   rejectObligation(obligationId: string): Promise<{ ok: true }> {
     return this.request('POST', `/obligations/${obligationId}/reject`)
+  }
+
+  lookahead(projectId: string, weeks = 3): Promise<{ activities: ActivityView[] }> {
+    return this.request('GET', `/projects/${projectId}/lookahead?weeks=${weeks}`)
+  }
+
+  exposure(projectId: string): Promise<{ exposure: ExposureView[] }> {
+    return this.request('GET', `/projects/${projectId}/exposure`)
+  }
+
+  recordActivities(recordId: string): Promise<{ activities: (ActivityView & { kind: string })[] }> {
+    return this.request('GET', `/records/${recordId}/activities`)
+  }
+
+  linkActivity(recordId: string, activityCode: string, kind = 'blocks'): Promise<{ ok: true }> {
+    return this.request('POST', `/records/${recordId}/activities`, { activityCode, kind })
   }
 
   clocks(projectId: string): Promise<{ clocks: ClockView[] }> {
