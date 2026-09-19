@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "node dist/main.js",
     "test": "vitest run",
-    "start:worker": "node dist/worker-main.js"
+    "start:worker": "node dist/worker-main.js",
+    "start:mcp": "node dist/mcp-main.js"
   },
   "dependencies": {
     "@plumbline/shared": "^0.1.0",

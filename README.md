@@ -70,7 +70,26 @@ OWNER_DATABASE_URL=postgres://<owner>@host/plumbline npm run migrate
 OWNER_DATABASE_URL=postgres://<owner>@host/plumbline npm run provision:app-role
 npm start                      # the API on :8080
 npm run start:worker           # the passes nobody clicks; see below
+npm run start:mcp              # an MCP server over the same API, for agents
 ```
+
+### The MCP server
+
+`start:mcp` speaks JSON-RPC over stdin and stdout, which is what an MCP
+client expects, and talks to the same HTTP API the browser does. It holds no
+database connection and no credentials of its own:
+
+```bash
+PLUMBLINE_URL=https://plumbline.example.com PLUMBLINE_TOKEN=... npm run start:mcp
+```
+
+The token is a person's. An agent given somebody's session gets exactly that
+person's access and nothing else, because row-level security and the
+permission model do not know the difference between an agent and a browser.
+There is no service account anywhere in this path, and that is deliberate:
+an agent is a client, not a role. The write surface is the workflow, so an
+agent cannot set a status or move the ball by hand — those are not operations
+the kernel offers anybody.
 
 ### The worker is not optional
 

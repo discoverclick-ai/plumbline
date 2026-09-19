@@ -779,3 +779,75 @@ describe('bringing a job across', () => {
     expect(result.createdUsers).toContain('robin@nash-arch.test')
   })
 })
+
+describe('the MCP server a customer runs', () => {
+  it('speaks the protocol over a pipe, as the person whose token it holds', async () => {
+    // The tool surface existed for weeks and no MCP client could reach it:
+    // routed over HTTP behind a bearer token, while an MCP client speaks
+    // JSON-RPC over a pipe. This drives the actual binary.
+    const { spawn } = await import('node:child_process')
+    const child = spawn(process.execPath, [new URL('../../dist/mcp-main.js', import.meta.url).pathname], {
+      env: { ...process.env, PLUMBLINE_URL: baseUrl, PLUMBLINE_TOKEN: pmToken },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+
+    const lines: string[] = []
+    let buffer = ''
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => {
+      buffer += chunk
+      let at = buffer.indexOf('\n')
+      while (at >= 0) {
+        const line = buffer.slice(0, at).trim()
+        buffer = buffer.slice(at + 1)
+        if (line) lines.push(line)
+        at = buffer.indexOf('\n')
+      }
+    })
+
+    const send = (message: unknown): void => void child.stdin.write(`${JSON.stringify(message)}\n`)
+    const waitFor = async (id: number): Promise<any> => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const found = lines.map((l) => JSON.parse(l)).find((m) => m.id === id)
+        if (found) return found
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      throw new Error(`No response to ${id}. stdout so far: ${lines.join(' | ')}`)
+    }
+
+    try {
+      send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      const initialised = await waitFor(1)
+      expect(initialised.result.serverInfo.name).toBe('plumbline')
+
+      // A notification takes no response, ever.
+      send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+
+      send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+      const listed = await waitFor(2)
+      expect(listed.result.tools.map((t: { name: string }) => t.name)).toContain('ball_in_court')
+
+      send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'ball_in_court', arguments: {} } })
+      const called = await waitFor(3)
+      expect(called.result.isError).toBe(false)
+      expect(Array.isArray(called.result.structuredContent)).toBe(true)
+
+      // A refusal comes back as a result the agent can read, not as a
+      // transport error it should give up on.
+      send({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: { name: 'get_record', arguments: { recordId: '00000000-0000-0000-0000-000000000000' } },
+      })
+      const refused = await waitFor(4)
+      expect(refused.error).toBeUndefined()
+      expect(refused.result.isError).toBe(true)
+
+      // Exactly four responses: the notification produced none.
+      expect(lines).toHaveLength(4)
+    } finally {
+      child.kill()
+    }
+  })
+})
