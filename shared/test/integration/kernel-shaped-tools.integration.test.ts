@@ -193,3 +193,75 @@ describe('tools that arrived as configuration', () => {
     expect(issued.record.body.carried_forward).toContain('mock-up')
   })
 })
+
+describe('the incident, which is a legal document from the moment it is written', () => {
+  it('will not leave the investigation without a root cause and a corrective action', async () => {
+    const created = await kernel.create(pm, {
+      projectId,
+      typeKey: 'incident',
+      title: 'Laceration on level three',
+      body: {
+        occurred_at: '2026-03-20',
+        incident_type: 'Injury',
+        location: 'Level 3 east',
+        description: 'Forearm caught on a sheared stud.',
+        medical_treatment: 'First Aid',
+      },
+      // Nobody named as the investigator yet, which is the ordinary case: a
+      // foreman reporting an injury from the field does not know who will
+      // pick it up, and requiring one is how you lose the report.
+      participants: [{ userId: trade.userId, role: 'approver' }],
+    })
+    expect(created.record.status).toBe('reported')
+    expect(created.assignment?.holderUserId).toBe(pm.userId)
+
+    // Somebody picks it up. Beginning an investigation without saying who is
+    // investigating is exactly the move that leaves incidents open for months.
+    await kernel.setParticipants(pm, created.record.id, {
+      add: [{ userId: pm.userId, role: 'assignee' }],
+    })
+
+    await kernel.transition(pm, created.record.id, {
+      transitionKey: 'investigate',
+      body: {
+        occurred_at: '2026-03-20',
+        incident_type: 'Injury',
+        location: 'Level 3 east',
+        description: 'Forearm caught on a sheared stud.',
+      },
+    })
+
+    // An incident closed without either is a filing exercise, and it is the
+    // version a lawyer reads out loud.
+    await expect(
+      kernel.transition(pm, created.record.id, { transitionKey: 'submit_findings' }),
+    ).rejects.toBeInstanceOf(ValidationError)
+
+    const submitted = await kernel.transition(pm, created.record.id, {
+      transitionKey: 'submit_findings',
+      body: {
+        occurred_at: '2026-03-20',
+        incident_type: 'Injury',
+        location: 'Level 3 east',
+        description: 'Forearm caught on a sheared stud.',
+        root_cause: 'Sheared studs left unprotected after demolition of the temporary partition.',
+        corrective_action: 'Cap or grind sheared studs at the end of each shift; added to the daily walk.',
+        recordable: 'No',
+      },
+    })
+    expect(submitted.record.status).toBe('pending_signoff')
+    // And sign-off is somebody else's, never the investigator's own.
+    expect(submitted.assignment?.holderUserId).toBe(trade.userId)
+  })
+
+  it('has no way out except a named person signing it', async () => {
+    const types = await loadRecordTypes(pool)
+    const incident = types.get('incident')!.definition
+    const terminals = incident.workflow.states.filter((s) => s.terminal).map((s) => s.key)
+    // No void, no auto-close, no cancel. The only terminal state is reached by
+    // the sign_off transition.
+    expect(terminals).toEqual(['closed'])
+    const intoClosed = incident.workflow.transitions.filter((t) => t.to === 'closed').map((t) => t.key)
+    expect(intoClosed).toEqual(['sign_off'])
+  })
+})
