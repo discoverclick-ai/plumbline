@@ -275,6 +275,23 @@ export interface PhotoView {
   recordIds: string[]
 }
 
+export interface EscalationView {
+  id: string
+  recordId: string
+  designation: string
+  title: string
+  typeKey: string
+  level: string
+  reason: string
+  message: string
+  notifiedId: string
+  notifiedName: string | null
+  holderName: string | null
+  daysWaiting: number
+  dueAt: string | null
+  createdAt: string
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -523,6 +540,22 @@ export class ApiClient {
 
   linkActivity(recordId: string, activityCode: string, kind = 'blocks'): Promise<{ ok: true }> {
     return this.request('POST', `/records/${recordId}/activities`, { activityCode, kind })
+  }
+
+  escalations(projectId: string): Promise<{ escalations: EscalationView[] }> {
+    return this.request('GET', `/projects/${projectId}/escalations`)
+  }
+
+  sweepEscalations(projectId: string): Promise<{ drafted: number; skipped: number }> {
+    return this.request('POST', `/projects/${projectId}/escalations/sweep`)
+  }
+
+  approveEscalation(escalationId: string): Promise<{ ok: true }> {
+    return this.request('POST', `/escalations/${escalationId}/approve`)
+  }
+
+  dismissEscalation(escalationId: string): Promise<{ ok: true }> {
+    return this.request('POST', `/escalations/${escalationId}/dismiss`)
   }
 
   clocks(projectId: string): Promise<{ clocks: ClockView[] }> {

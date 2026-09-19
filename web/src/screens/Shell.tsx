@@ -7,6 +7,7 @@ import { BallInCourt } from './BallInCourt.tsx'
 import { Budget } from './Budget.tsx'
 import { Contracts } from './Contracts.tsx'
 import { Lookahead } from './Lookahead.tsx'
+import { Chasing } from './Chasing.tsx'
 import { Photos } from './Photos.tsx'
 import { CaptureInbox } from './CaptureInbox.tsx'
 import { RecordDetail } from './RecordDetail.tsx'
@@ -128,7 +129,7 @@ export function Portfolio({ onOpenProject }: { onOpenProject: (project: ProjectV
   )
 }
 
-type ProjectTab = 'work' | 'records' | 'lookahead' | 'photos' | 'budget' | 'contracts' | 'inbox'
+type ProjectTab = 'work' | 'records' | 'lookahead' | 'photos' | 'budget' | 'contracts' | 'chasing' | 'inbox'
 
 export function ProjectShell({ project, onLeave }: { project: ProjectView; onLeave: () => void }) {
   const { scopeToProject, loading, level } = useSession()
@@ -159,6 +160,11 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
   // whoever the server will serve it to.
   if (atLeast(level('contracts'), 'read_only') || atLeast(level('notices'), 'read_only'))
     tabs.push({ key: 'contracts', label: 'Contracts' })
+  // The chase queue is the project team's, not the trade partners'. Somebody
+  // being chased does not need a screen listing the chases about them.
+  if (atLeast(level('project_team'), 'read_only') && atLeast(level('rfis'), 'standard')) {
+    tabs.push({ key: 'chasing', label: 'Chasing' })
+  }
   if (atLeast(level('capture'), 'read_only')) tabs.push({ key: 'inbox', label: 'Capture inbox' })
 
   return (
@@ -209,6 +215,7 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
           )}
           {tab === 'lookahead' && <Lookahead projectId={project.id} projectName={project.name} />}
           {tab === 'photos' && <Photos projectId={project.id} projectName={project.name} />}
+          {tab === 'chasing' && <Chasing projectId={project.id} projectName={project.name} />}
           {tab === 'budget' && <Budget projectId={project.id} projectName={project.name} />}
           {tab === 'contracts' && <Contracts projectId={project.id} projectName={project.name} />}
           {tab === 'inbox' && <CaptureInbox projectId={project.id} projectName={project.name} />}

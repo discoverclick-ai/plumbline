@@ -116,6 +116,24 @@ async function assertOnProject(db: Db, actor: Actor, projectId: string): Promise
   }
 }
 
+export interface PendingEscalation {
+  id: string
+  recordId: string
+  designation: string
+  title: string
+  typeKey: string
+  level: string
+  reason: string
+  message: string
+  notifiedId: string
+  /** Who the draft would go to, by name. Never just an id on a screen. */
+  notifiedName: string | null
+  holderName: string | null
+  daysWaiting: number
+  dueAt: string | null
+  createdAt: string
+}
+
 export interface ScheduleImpact {
   activityName: string
   startAt: string | null
@@ -312,25 +330,41 @@ export class EscalationService {
     return { reason, message }
   }
 
-  async pending(actor: Actor, projectId: string): Promise<
-    { id: string; recordId: string; level: string; reason: string; message: string; notifiedId: string }[]
-  > {
+  async pending(actor: Actor, projectId: string): Promise<PendingEscalation[]> {
     return withTenant(this.db, actor.tenantId, async (tx) => {
       await assertOnProject(tx, actor, projectId)
-      const { rows } = await tx.query<Record<string, string>>(
-        `SELECT id, record_id, level, reason, drafted_message, notified_id
-           FROM escalations
-          WHERE tenant_id = $1 AND project_id = $2 AND approved_at IS NULL AND dismissed_at IS NULL
-          ORDER BY created_at DESC`,
+      // Joined to the record and the people, because a queue that shows an
+      // id and a message is one somebody has to open four tabs to act on,
+      // and then does not act on.
+      const { rows } = await tx.query<Record<string, unknown>>(
+        `SELECT e.id, e.record_id, e.level::text AS level, e.reason, e.drafted_message, e.notified_id,
+                e.days_waiting, e.due_at, e.created_at,
+                r.designation, r.title, r.type_key,
+                holder.name AS holder_name, notified.name AS notified_name
+           FROM escalations e
+           JOIN records r ON r.id = e.record_id AND r.tenant_id = e.tenant_id
+      LEFT JOIN users holder ON holder.id = e.holder_id AND holder.tenant_id = e.tenant_id
+      LEFT JOIN users notified ON notified.id = e.notified_id AND notified.tenant_id = e.tenant_id
+          WHERE e.tenant_id = $1 AND e.project_id = $2
+            AND e.approved_at IS NULL AND e.dismissed_at IS NULL
+          ORDER BY e.created_at DESC`,
         [actor.tenantId, projectId],
       )
       return rows.map((r) => ({
         id: r['id'] as string,
         recordId: r['record_id'] as string,
+        designation: r['designation'] as string,
+        title: r['title'] as string,
+        typeKey: r['type_key'] as string,
         level: r['level'] as string,
         reason: r['reason'] as string,
-        message: r['drafted_message'] as string,
+        message: (r['drafted_message'] as string | null) ?? '',
         notifiedId: r['notified_id'] as string,
+        notifiedName: (r['notified_name'] as string | null) ?? null,
+        holderName: (r['holder_name'] as string | null) ?? null,
+        daysWaiting: Number(r['days_waiting'] ?? 0),
+        dueAt: r['due_at'] ? (r['due_at'] as Date).toISOString() : null,
+        createdAt: (r['created_at'] as Date).toISOString(),
       }))
     })
   }
