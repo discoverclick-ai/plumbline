@@ -97,7 +97,18 @@ export const DEFAULT_TEMPLATES: TemplateSpec[] = [
       {
         toolKey: 'contracts',
         level: 'standard',
-        privileges: ['upload', 'segment', 'view_terms', 'accept_obligation', 'toll_clock', 'manage_calendar'],
+        privileges: [
+          'upload',
+          'segment',
+          'view_terms',
+          'accept_obligation',
+          'toll_clock',
+          'manage_calendar',
+          // Where the job is, what kind of work it is, and where this company
+          // sits in the chain ON THIS JOB. All three change the lien
+          // deadline, and none of them is a property of the company.
+          'manage_statutory',
+        ],
       },
       { toolKey: 'notices', level: 'standard', privileges: ['create', 'issue', 'stand_down'] },
       { toolKey: 'schedule', level: 'standard', privileges: ['import', 'set_baseline', 'link'] },

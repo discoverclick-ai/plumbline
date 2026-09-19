@@ -13,6 +13,7 @@ import {
   ObligationService,
   renderClaimFile,
   ScheduleService,
+  StatutoryService,
   type ObligationExtractionProvider,
   TOOLS,
   SyncService,
@@ -82,6 +83,7 @@ interface RequestContext {
   obligations: ObligationService
   clocks: ClockEngine
   claims: ClaimFileService
+  statutory: StatutoryService
   schedule: ScheduleService
   mcp: McpToolRunner
   commitments: CommitmentService
@@ -899,6 +901,34 @@ const ROUTES: Route[] = [
    * without waiting for the next tick, and because a deadline subsystem
    * nobody can force to run is one nobody will trust.
    */
+  // ---------------------------------------------------------------------
+  // Statutory deadlines
+  // ---------------------------------------------------------------------
+
+  route('GET', '/projects/:projectId/statutory-clocks', async ({ actor, params, statutory }) => ({
+    clocks: await statutory.clocks(actor, params['projectId'] as string),
+  })),
+
+  route('PUT', '/projects/:projectId/statutory-facts', async ({ actor, params, body, statutory }) => {
+    await statutory.setFacts(actor, params['projectId'] as string, {
+      jurisdiction: String(body['jurisdiction'] ?? ''),
+      projectType: String(body['projectType'] ?? 'private'),
+      claimantRole: body['claimantRole'] as Parameters<StatutoryService['setFacts']>[2]['claimantRole'],
+      ...(body['firstFurnishing'] ? { firstFurnishing: String(body['firstFurnishing']) } : {}),
+      ...(body['lastFurnishing'] ? { lastFurnishing: String(body['lastFurnishing']) } : {}),
+      ...(body['completionDate'] ? { completionDate: String(body['completionDate']) } : {}),
+      ...(body['contractExecuted'] ? { contractExecuted: String(body['contractExecuted']) } : {}),
+    })
+    // Swept immediately. A date typed into a form and a deadline appearing on
+    // a screen should be the same action; making somebody press a second
+    // button is how a lien window gets recorded and never watched.
+    return statutory.sweep(actor, params['projectId'] as string)
+  }),
+
+  route('POST', '/projects/:projectId/statutory-clocks/sweep', async ({ actor, params, statutory }) =>
+    statutory.sweep(actor, params['projectId'] as string),
+  ),
+
   /**
    * The claim file.
    *
@@ -1032,6 +1062,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
   const clockEngine = new ClockEngine(pool as Db)
   const scheduleService = new ScheduleService(pool as Db)
   const claimFileService = new ClaimFileService(pool as Db)
+  const statutoryService = new StatutoryService(pool as Db)
   const mcpRunner = new McpToolRunner(pool as Db)
   const commitmentService = new CommitmentService(pool as Db)
   const invoicingService = new InvoicingService(pool as Db)
@@ -1111,6 +1142,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           clocks: clockEngine,
           schedule: scheduleService,
           claims: claimFileService,
+          statutory: statutoryService,
           mcp: mcpRunner,
           commitments: commitmentService,
           invoicing: invoicingService,

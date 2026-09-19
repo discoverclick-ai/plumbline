@@ -237,6 +237,12 @@ A is a week. C is the one that decides whether the product is trustworthy, and i
 ## 11. Open questions
 
 - **Which contract forms first.** AIA A201 is the most common and the best documented. Owner-custom forms are where the money is and where extraction is hardest. Starting with A201 risks building for the easy case.
-- **Statutory deadlines are a separate, better problem.** Lien and bond claim deadlines are set by state statute, not by contract. They vary by state and by party role, they are public, and blowing one costs the money outright rather than merely the claim. That is a curated reference dataset plus the same clock engine, with no extraction risk at all. It may be worth building before contract extraction, because it is deterministic and the consequence is larger.
+- **Statutory deadlines.** Built (migration 0033). The mechanism is complete and there is no model anywhere in it: `statutory_rules` is a jurisdiction-scoped reference table, `project_statutory_facts` holds the dates a person looked up and typed, and `statutory_clocks` carries the result with its citation and its arithmetic frozen. The arithmetic handles both shapes statutes use — a plain window, and "the fifteenth day of the third month after", which no number of days expresses and which is clamped rather than rolled.
+
+  The gate is the whole design: **a rule nobody has verified against the statute, by name and on a date, starts no clocks**, and the product ships with every rule unverified. An applicable-but-unverified rule is reported to the customer rather than hidden, because it is a deadline that exists whether or not this product knows the number.
+
+  The dataset is deliberately two federal rows. Seeding fifty states of lien law from memory would be the single most dangerous thing this repository could contain: fifty confident numbers, each relied upon, none checked. Buying or commissioning a verified dataset is an INSERT, and the schema is built for that.
+
+  Still open: the deadline types that fire from events rather than project facts (`lien_recorded`, `notice_of_termination`, `payment_due`) read from the event log the way contract clocks do, and do not yet.
 - **Whether counsel review belongs in the product.** A "send this profile to our attorney" path is plausible and would raise trust considerably.
 - **Subcontract flow-down depth.** A prime incorporated into a subcontract incorporated into a purchase order is three levels of inheritance, and real projects do this.
