@@ -66,6 +66,28 @@ export interface StatutoryRule {
   verifiedAt: string | null
 }
 
+/**
+ * The three triggers this product does not witness.
+ *
+ * A lien recorded at the county, a notice of termination served, a payment
+ * falling due under terms that live in a contract nobody here wrote. These
+ * are typed in, which is the honest answer rather than the clever one: the
+ * alternative is deriving a payment due date from an invoice table that has
+ * no due date on it, and a guessed statutory deadline is the exact failure
+ * this subsystem exists to prevent.
+ */
+export type StatutoryEventKind = 'notice_of_termination' | 'lien_recorded' | 'payment_due'
+
+export interface StatutoryEventRow {
+  id: string
+  kind: StatutoryEventKind
+  /** The date the statute counts from, which is often not the day it was typed. */
+  occurredOn: string
+  reference: string
+  note: string
+  recordedBy: string | null
+}
+
 export interface StatutoryFacts {
   jurisdiction: string
   projectType: string
@@ -89,6 +111,8 @@ export interface StatutoryClockRow {
   dueOn: string
   warnOn: string
   triggeredBy: StatutoryTrigger
+  /** The recorded event this started from, when it started from one. */
+  sourceEvent: { reference: string; note: string } | null
   noticeRecordId: string | null
   computation: Record<string, unknown>
 }
@@ -225,6 +249,95 @@ export class StatutoryService {
   }
 
   /**
+   * Records one of the three things the product cannot see for itself.
+   *
+   * Gated on `manage_statutory` exactly as the facts are, and for the same
+   * reason: a date typed here starts a clock that somebody will rely on, and
+   * anybody who can type it can move a deadline.
+   */
+  async recordEvent(
+    actor: Actor,
+    projectId: string,
+    input: { kind: StatutoryEventKind; occurredOn: string; reference?: string; note?: string },
+  ): Promise<{ id: string }> {
+    return withTenant(this.db, actor.tenantId, async (tx) => {
+      const access = await loadAccess(tx, { userId: actor.userId, tenantId: actor.tenantId, projectId })
+      if (!hasPrivilege(access, 'contracts', 'manage_statutory') && !access.isCompanyAdmin) {
+        throw new PermissionDeniedError('You cannot record the statutory dates on this project', {
+          tool: 'contracts',
+          privilege: 'manage_statutory',
+        })
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(input.occurredOn ?? '')) {
+        throw new ValidationError('That is not a date', [
+          { field: 'occurredOn', message: 'Use YYYY-MM-DD — the date the statute counts from' },
+        ])
+      }
+
+      const { rows } = await tx.query<{ id: string }>(
+        `INSERT INTO statutory_events (tenant_id, project_id, kind, occurred_on, reference, note, recorded_by)
+         VALUES ($1, $2, $3::statutory_event_kind, $4::date, $5, $6, $7)
+         -- Two people recording the same lien on the same day is a duplicate,
+         -- not a second lien. Returning the existing row keeps the caller
+         -- from treating a duplicate as a failure.
+         ON CONFLICT (project_id, kind, occurred_on, reference)
+           DO UPDATE SET note = EXCLUDED.note
+         RETURNING id`,
+        [
+          actor.tenantId,
+          projectId,
+          input.kind,
+          input.occurredOn,
+          input.reference?.trim() ?? '',
+          input.note?.trim() ?? '',
+          actor.userId,
+        ],
+      )
+      return { id: rows[0]?.id as string }
+    })
+  }
+
+  async events(actor: Actor, projectId: string): Promise<StatutoryEventRow[]> {
+    return withTenant(this.db, actor.tenantId, async (tx) => {
+      const access = await loadAccess(tx, { userId: actor.userId, tenantId: actor.tenantId, projectId })
+      if (!hasLevel(access, 'contracts', 'read_only') && !access.isCompanyAdmin) {
+        throw new PermissionDeniedError('You cannot see the statutory dates on this project', {
+          tool: 'contracts',
+        })
+      }
+      return this.loadEvents(tx, actor.tenantId, projectId)
+    })
+  }
+
+  /**
+   * Takes the transaction rather than opening one.
+   *
+   * The sweep reads these from inside its own transaction, and calling the
+   * public `events` there would take a SECOND connection off the pool and
+   * read outside the work in flight. A sweep that decides what to start from
+   * data its own transaction cannot see is a sweep that is sometimes right.
+   */
+  private async loadEvents(tx: Db, tenantId: string, projectId: string): Promise<StatutoryEventRow[]> {
+    const { rows } = await tx.query<Record<string, unknown>>(
+      `SELECT e.id, e.kind::text AS kind, to_char(e.occurred_on, 'YYYY-MM-DD') AS occurred_on,
+              e.reference, e.note, u.name AS recorded_by
+         FROM statutory_events e
+         LEFT JOIN users u ON u.id = e.recorded_by AND u.tenant_id = e.tenant_id
+        WHERE e.tenant_id = $1 AND e.project_id = $2
+        ORDER BY e.occurred_on DESC, e.created_at DESC`,
+      [tenantId, projectId],
+    )
+    return rows.map((r) => ({
+      id: r['id'] as string,
+      kind: r['kind'] as StatutoryEventKind,
+      occurredOn: r['occurred_on'] as string,
+      reference: (r['reference'] as string) ?? '',
+      note: (r['note'] as string) ?? '',
+      recordedBy: (r['recorded_by'] as string | null) ?? null,
+    }))
+  }
+
+  /**
    * Starts every clock the facts now support.
    *
    * Idempotent on (project, rule, start date), so running it after every edit
@@ -242,6 +355,7 @@ export class StatutoryService {
       }
 
       const facts = await this.loadFacts(tx, actor.tenantId, projectId)
+      const events = await this.loadEvents(tx, actor.tenantId, projectId)
       const result: StatutorySweepResult = { started: 0, skipped: [], unverified: [] }
 
       const { rows: rules } = await tx.query<Record<string, unknown>>(
@@ -268,8 +382,12 @@ export class StatutoryService {
           continue
         }
 
-        const startedOn = this.startDateFor(rule.trigger, facts)
-        if (!startedOn) {
+        // A list, not a date. Five triggers are project facts and give at
+        // most one; the three event triggers give one per occurrence, and a
+        // job where a lien was recorded in March and again in July has two
+        // deadlines to foreclose, not one.
+        const starts = this.startsFor(rule.trigger, facts, events)
+        if (starts.length === 0) {
           result.skipped.push({
             citation: rule.citation,
             reason: `No date recorded for ${rule.trigger.replace(/_/g, ' ')}, so this clock cannot start`,
@@ -277,38 +395,42 @@ export class StatutoryService {
           continue
         }
 
-        const { dueOn, steps } = statutoryDeadline(rule, startedOn)
-        const warnOn = statutoryWarnOn(startedOn, dueOn)
+        for (const start of starts) {
+          const { dueOn, steps } = statutoryDeadline(rule, start.startedOn)
+          const warnOn = statutoryWarnOn(start.startedOn, dueOn)
 
-        const { rowCount } = await tx.query(
-          `INSERT INTO statutory_clocks
-             (tenant_id, project_id, rule_id, triggered_by, started_on, due_on, warn_on, computation)
-           VALUES ($1, $2, $3, $4::statutory_trigger, $5::date, $6::date, $7::date, $8::jsonb)
-           ON CONFLICT (project_id, rule_id, started_on) DO NOTHING`,
-          [
-            actor.tenantId,
-            projectId,
-            rule.id,
-            rule.trigger,
-            startedOn,
-            dueOn,
-            warnOn,
-            JSON.stringify({
-              steps,
-              citation: rule.citation,
-              citationUrl: rule.citationUrl,
-              summary: rule.summary,
-              consequence: rule.consequence,
-              jurisdiction: rule.jurisdiction,
-              claimantRole: rule.claimantRole,
-              verifiedBy: rule.verifiedBy,
-              verifiedAt: rule.verifiedAt,
-              trigger: rule.trigger,
-              startedOn,
-            }),
-          ],
-        )
-        if ((rowCount ?? 0) > 0) result.started += 1
+          const { rowCount } = await tx.query(
+            `INSERT INTO statutory_clocks
+               (tenant_id, project_id, rule_id, triggered_by, started_on, due_on, warn_on, computation, source_event_id)
+             VALUES ($1, $2, $3, $4::statutory_trigger, $5::date, $6::date, $7::date, $8::jsonb, $9)
+             ON CONFLICT (project_id, rule_id, started_on) DO NOTHING`,
+            [
+              actor.tenantId,
+              projectId,
+              rule.id,
+              rule.trigger,
+              start.startedOn,
+              dueOn,
+              warnOn,
+              JSON.stringify({
+                steps,
+                citation: rule.citation,
+                citationUrl: rule.citationUrl,
+                summary: rule.summary,
+                consequence: rule.consequence,
+                jurisdiction: rule.jurisdiction,
+                claimantRole: rule.claimantRole,
+                verifiedBy: rule.verifiedBy,
+                verifiedAt: rule.verifiedAt,
+                trigger: rule.trigger,
+                startedOn: start.startedOn,
+                ...(start.reference ? { sourceReference: start.reference } : {}),
+              }),
+              start.eventId,
+            ],
+          )
+          if ((rowCount ?? 0) > 0) result.started += 1
+        }
       }
 
       return result
@@ -330,9 +452,11 @@ export class StatutoryService {
                 to_char(k.due_on, 'YYYY-MM-DD') AS due_on,
                 to_char(k.warn_on, 'YYYY-MM-DD') AS warn_on,
                 k.notice_record_id, k.computation,
+                e.reference AS source_reference, e.note AS source_note,
                 r.deadline_type::text AS deadline_type, r.citation, r.citation_url, r.summary, r.consequence
            FROM statutory_clocks k
            JOIN statutory_rules r ON r.id = k.rule_id
+           LEFT JOIN statutory_events e ON e.id = k.source_event_id AND e.tenant_id = k.tenant_id
           WHERE k.tenant_id = $1 AND k.project_id = $2
           ORDER BY k.due_on`,
         [actor.tenantId, projectId],
@@ -350,30 +474,53 @@ export class StatutoryService {
         dueOn: r['due_on'] as string,
         warnOn: r['warn_on'] as string,
         triggeredBy: r['triggered_by'] as StatutoryTrigger,
+        // "Why does this say the 14th" needs an answer, and for the three
+        // triggers a person types in, the answer is the thing they typed.
+        sourceEvent:
+          r['source_reference'] === null && r['source_note'] === null
+            ? null
+            : {
+                reference: (r['source_reference'] as string) ?? '',
+                note: (r['source_note'] as string) ?? '',
+              },
         noticeRecordId: (r['notice_record_id'] as string | null) ?? null,
         computation: r['computation'] as Record<string, unknown>,
       }))
     })
   }
 
-  private startDateFor(trigger: StatutoryTrigger, facts: StatutoryFacts): string | null {
+  private startsFor(
+    trigger: StatutoryTrigger,
+    facts: StatutoryFacts,
+    events: StatutoryEventRow[],
+  ): { startedOn: string; eventId: string | null; reference: string }[] {
+    const fact = (date: string | null): { startedOn: string; eventId: null; reference: string }[] =>
+      date === null ? [] : [{ startedOn: date, eventId: null, reference: '' }]
+
     switch (trigger) {
       case 'first_furnishing':
-        return facts.firstFurnishing
+        return fact(facts.firstFurnishing)
       case 'last_furnishing':
-        return facts.lastFurnishing
+        return fact(facts.lastFurnishing)
       case 'project_completion':
-        return facts.completionDate
+        return fact(facts.completionDate)
       case 'notice_of_completion':
-        return facts.noticeOfCompletionRecorded
+        return fact(facts.noticeOfCompletionRecorded)
       case 'contract_execution':
-        return facts.contractExecuted
-      default:
-        // lien_recorded, notice_of_termination and payment_due are events
-        // rather than project facts. They will come from the event log the
-        // way contract clocks do; until they do, saying nothing beats
-        // guessing at a date.
-        return null
+        return fact(facts.contractExecuted)
+      default: {
+        // The three the product does not witness. Two liens recorded on the
+        // SAME day against the same rule are one deadline, not two, so the
+        // dates are deduplicated here rather than left to collide against
+        // the clock's unique key and silently lose one.
+        const matching = events.filter((e) => e.kind === trigger)
+        const seen = new Set<string>()
+        return matching.flatMap((e) => {
+          if (seen.has(e.occurredOn)) return []
+          seen.add(e.occurredOn)
+          return [{ startedOn: e.occurredOn, eventId: e.id, reference: e.reference }]
+        })
+      }
     }
   }
 

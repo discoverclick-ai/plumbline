@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { ClauseView, ClockView, ContractDocumentView, ObligationView, StatutoryClockView } from '../api/client.js'
+import type {
+  ClauseView,
+  ClockView,
+  ContractDocumentView,
+  ObligationView,
+  StatutoryClockView,
+  StatutoryEventKind,
+  StatutoryEventView,
+} from '../api/client.js'
 import { ToolLandingPage } from '../layouts/index.js'
 import { useSession } from '../session/SessionProvider.tsx'
 import { Banner, Button, Card, EmptyState, Input, Pill, Select, Spinner, Table, Tabs } from '../ui/index.js'
@@ -293,6 +301,16 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
           <StatutoryFacts
             projectId={projectId}
             onSwept={() => void api.statutoryClocks(projectId).then((r) => setStatutory(r.clocks))}
+          />
+          {/*
+            The three triggers this product cannot see for itself. Without
+            somewhere to type them, every rule hanging off a recorded lien, a
+            served termination or a payment falling due was skipped with a
+            reason the customer could read and could not act on.
+          */}
+          <StatutoryEvents
+            projectId={projectId}
+            onRecorded={() => void api.statutoryClocks(projectId).then((r) => setStatutory(r.clocks))}
           />
           <StatutoryClocks clocks={statutory} />
         </>
@@ -876,6 +894,168 @@ function StatutoryFacts({ projectId, onSwept }: { projectId: string; onSwept: ()
   )
 }
 
+const EVENT_KINDS: { value: StatutoryEventKind; label: string; hint: string }[] = [
+  {
+    value: 'lien_recorded',
+    label: 'Lien recorded',
+    hint: 'The date the county recorded it, which is what the statute counts from.',
+  },
+  {
+    value: 'notice_of_termination',
+    label: 'Notice of termination',
+    hint: 'The date it was served, not the date it was drafted.',
+  },
+  {
+    value: 'payment_due',
+    label: 'Payment fell due',
+    hint: 'Under the terms in your contract. This product cannot read them for you.',
+  },
+]
+
+/**
+ * The dates nothing here witnesses.
+ *
+ * Five of the eight statutory triggers are facts about the job and the job
+ * knows them. These three are external acts: a clerk recording an instrument,
+ * a notice served, a payment falling due under terms that live in a contract
+ * this product did not write. Deriving any of them would be a guess, and a
+ * guessed statutory deadline is worse than none — a contractor relies on it
+ * and loses money they have already earned.
+ *
+ * Recording one sweeps immediately, for the same reason the facts form does:
+ * a date typed in and a deadline appearing should be one action, because
+ * making somebody press a second button is how a lien window gets recorded
+ * and never watched.
+ */
+function StatutoryEvents({ projectId, onRecorded }: { projectId: string; onRecorded: () => void }) {
+  const { api } = useSession()
+  const [events, setEvents] = useState<StatutoryEventView[] | null>(null)
+  const [kind, setKind] = useState<StatutoryEventKind>('lien_recorded')
+  const [occurredOn, setOccurredOn] = useState('')
+  const [reference, setReference] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .statutoryEvents(projectId)
+      .then((r) => {
+        if (!cancelled) setEvents(r.events)
+      })
+      .catch(() => {
+        // Left null rather than emptied. "Nothing recorded" shown to somebody
+        // whose request failed invites them to type a lien in twice.
+        if (!cancelled) setError('Could not load what has already been recorded')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [api, projectId, busy])
+
+  return (
+    <Card title="Dates this product cannot see for itself">
+      <p style={{ margin: '0 0 10px', fontSize: 13, color: 'var(--ink-muted)' }}>
+        A lien recorded at the county, a notice served, a payment falling due. Nothing here witnesses any of these,
+        so a deadline that runs from one of them starts when you say it did.
+      </p>
+
+      {error ? <Banner tone="danger">{error}</Banner> : null}
+
+      {events && events.length > 0 ? (
+        <Table
+          rows={events}
+          rowKey={(row) => row.id}
+          columns={[
+            {
+              key: 'date',
+              header: 'Happened',
+              width: '120px',
+              render: (row: StatutoryEventView) => (
+                <span style={{ fontVariantNumeric: 'tabular-nums' }}>{row.occurredOn}</span>
+              ),
+            },
+            {
+              key: 'kind',
+              header: 'What',
+              width: '190px',
+              render: (row: StatutoryEventView) => (
+                <>{EVENT_KINDS.find((k) => k.value === row.kind)?.label ?? row.kind.replace(/_/g, ' ')}</>
+              ),
+            },
+            {
+              key: 'reference',
+              header: 'Reference',
+              render: (row: StatutoryEventView) => (
+                <>
+                  <div>{row.reference || <span style={{ color: 'var(--ink-faint)' }}>None given</span>}</div>
+                  {row.note ? (
+                    <div style={{ fontSize: 12, color: 'var(--ink-muted)' }}>{row.note}</div>
+                  ) : null}
+                </>
+              ),
+            },
+            {
+              key: 'by',
+              header: 'Recorded by',
+              width: '150px',
+              secondary: true,
+              render: (row: StatutoryEventView) => <>{row.recordedBy ?? '—'}</>,
+            },
+          ]}
+        />
+      ) : null}
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 12 }}>
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+          What happened
+          <Select
+            value={kind}
+            onChange={(value) => setKind(value as StatutoryEventKind)}
+            options={EVENT_KINDS.map((k) => ({ value: k.value, label: k.label }))}
+          />
+        </label>
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+          Date it happened
+          <Input value={occurredOn} onChange={setOccurredOn} type="date" />
+        </label>
+        <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)', flex: '1 1 220px' }}>
+          Reference
+          <Input value={reference} onChange={setReference} placeholder="Instrument 2026-0041882" />
+        </label>
+        <Button
+          disabled={busy || occurredOn === ''}
+          onClick={() => {
+            setBusy(true)
+            setError(null)
+            api
+              .recordStatutoryEvent(projectId, {
+                kind,
+                occurredOn,
+                ...(reference.trim() ? { reference: reference.trim() } : {}),
+              })
+              // Sweeping here rather than behind a second button. A date typed
+              // in and a deadline appearing on the screen are one action.
+              .then(() => api.sweepStatutory(projectId))
+              .then(() => {
+                setOccurredOn('')
+                setReference('')
+                onRecorded()
+              })
+              .catch((err: unknown) => setError(err instanceof Error ? err.message : 'That date was refused'))
+              .finally(() => setBusy(false))
+          }}
+        >
+          {busy ? 'Recording…' : 'Record it'}
+        </Button>
+      </div>
+      <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--ink-muted)' }}>
+        {EVENT_KINDS.find((k) => k.value === kind)?.hint}
+      </p>
+    </Card>
+  )
+}
+
 function StatutoryClocks({ clocks }: { clocks: StatutoryClockView[] }) {
   return (
     <Card title="Lien and bond deadlines">
@@ -902,6 +1082,10 @@ function StatutoryClocks({ clocks }: { clocks: StatutoryClockView[] }) {
                 {clock.computation['verifiedBy'] ? ` · verified by ${String(clock.computation['verifiedBy'])}` : ''}
                 {' · running from '}
                 {clock.startedOn} ({clock.triggeredBy.replace(/_/g, ' ')})
+                {/* "Why does this say the 9th of July" has to have an answer,
+                    and for a trigger somebody typed the answer is the thing
+                    they typed. */}
+                {clock.sourceEvent?.reference ? ` · ${clock.sourceEvent.reference}` : ''}
               </p>
             </article>
           )

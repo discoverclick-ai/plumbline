@@ -2,6 +2,7 @@ import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { StatutoryService } from '../../src/contracts/statutory.js'
 import { createPool, withTenant } from '../../src/db.js'
+import { ValidationError } from '../../src/errors.js'
 import type { Actor } from '../../src/kernel.js'
 import {
   addProjectMember,
@@ -195,5 +196,130 @@ describe('the facts', () => {
     await expect(
       statutory.sweep({ tenantId: stranger.tenantId, userId: stranger.adminUserId }, projectId),
     ).rejects.toThrow()
+  })
+})
+
+/**
+ * The three triggers the product does not witness.
+ *
+ * Five of the eight statutory triggers are facts about the job and the job
+ * knows them. A lien recorded at the county, a notice of termination served,
+ * a payment falling due under terms in a contract nobody here wrote: nothing
+ * in this product sees any of those, so every rule hanging off one of them
+ * was skipped with a reason the customer could not act on. Somebody records
+ * them, which is the honest answer rather than the clever one.
+ */
+describe('the triggers somebody has to type in', () => {
+  let foreclosureRuleId: string
+
+  beforeAll(async () => {
+    // No shipped rule uses an event trigger, because the shipped dataset is
+    // two federal rules and both hang off last furnishing. Verified here, by
+    // name and on a date, exactly as the gate demands of a real one.
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO statutory_rules
+         (jurisdiction, project_type, deadline_type, claimant_role, trigger, duration_value, duration_unit,
+          citation, summary, consequence, verified_by, verified_at)
+       VALUES ('US-MILLER', 'federal', 'lien_foreclosure', 'first_tier_subcontractor', 'lien_recorded',
+               90, 'days', 'TEST-LIEN-FORECLOSURE',
+               'Suit to foreclose must be brought within the window after the lien was recorded.',
+               'The lien expires and the security is gone.',
+               'Reyes & Cole LLP', '2026-01-15')
+       RETURNING id`,
+    )
+    foreclosureRuleId = rows[0]!.id
+  })
+
+  afterAll(async () => {
+    await pool.query('DELETE FROM statutory_clocks WHERE rule_id = $1', [foreclosureRuleId])
+    await pool.query('DELETE FROM statutory_rules WHERE id = $1', [foreclosureRuleId])
+  })
+
+  it('says plainly that it has no date, rather than guessing at one', async () => {
+    const result = await statutory.sweep(pm, projectId)
+    const skip = result.skipped.find((s) => s.citation === 'TEST-LIEN-FORECLOSURE')
+    // A guessed statutory deadline is the exact failure this subsystem
+    // exists to prevent, so silence beats invention.
+    expect(skip?.reason).toMatch(/No date recorded for lien recorded/)
+  })
+
+  it('starts the clock from the date the lien was recorded, not the date it was typed', async () => {
+    await statutory.recordEvent(pm, projectId, {
+      kind: 'lien_recorded',
+      occurredOn: '2026-04-10',
+      reference: 'Instrument 2026-0041882',
+      note: 'Recorded with the county clerk.',
+    })
+
+    expect((await statutory.sweep(pm, projectId)).started).toBeGreaterThan(0)
+
+    const clock = (await statutory.clocks(pm, projectId)).find((c) => c.citation === 'TEST-LIEN-FORECLOSURE')
+    expect(clock?.startedOn).toBe('2026-04-10')
+    expect(clock?.dueOn).toBe('2026-07-09')
+    // "Why does this say the 9th of July" has to have an answer, and for a
+    // trigger a person typed the answer is the thing they typed.
+    expect(clock?.sourceEvent?.reference).toBe('Instrument 2026-0041882')
+  })
+
+  it('gives a second lien its own deadline', async () => {
+    // A job where a lien was recorded in April and again in July has two
+    // deadlines to foreclose. Flattening the kind into one column per project
+    // would let the second overwrite the first, which is how a deadline that
+    // was real disappears.
+    await statutory.recordEvent(pm, projectId, {
+      kind: 'lien_recorded',
+      occurredOn: '2026-07-01',
+      reference: 'Instrument 2026-0077310',
+    })
+    await statutory.sweep(pm, projectId)
+
+    const clocks = (await statutory.clocks(pm, projectId)).filter((c) => c.citation === 'TEST-LIEN-FORECLOSURE')
+    expect(clocks.map((c) => c.startedOn).sort()).toEqual(['2026-04-10', '2026-07-01'])
+    expect(clocks.map((c) => c.dueOn).sort()).toEqual(['2026-07-09', '2026-09-29'])
+  })
+
+  it('treats two liens recorded on the same day as one deadline', async () => {
+    const before = (await statutory.clocks(pm, projectId)).length
+    await statutory.recordEvent(pm, projectId, {
+      kind: 'lien_recorded',
+      occurredOn: '2026-07-01',
+      reference: 'Instrument 2026-0077311',
+    })
+    await statutory.sweep(pm, projectId)
+    // Same date, same rule, same deadline. Two rows would be two identical
+    // warnings about one thing, which is how people learn to ignore them.
+    expect((await statutory.clocks(pm, projectId)).length).toBe(before)
+  })
+
+  it('treats the same lien recorded twice as a duplicate, not a second lien', async () => {
+    const again = await statutory.recordEvent(pm, projectId, {
+      kind: 'lien_recorded',
+      occurredOn: '2026-04-10',
+      reference: 'Instrument 2026-0041882',
+      note: 'Recorded with the county clerk.',
+    })
+    const events = (await statutory.events(pm, projectId)).filter(
+      (e) => e.reference === 'Instrument 2026-0041882',
+    )
+    expect(events).toHaveLength(1)
+    expect(events[0]?.id).toBe(again.id)
+  })
+
+  it('refuses a date that is not one', async () => {
+    await expect(
+      statutory.recordEvent(pm, projectId, { kind: 'payment_due', occurredOn: 'last Tuesday' }),
+    ).rejects.toBeInstanceOf(ValidationError)
+  })
+
+  it('keeps the deadline where it was when the rule is corrected later', async () => {
+    // The computation is frozen on the clock. A correction to the rule next
+    // year must not silently move a deadline somebody already acted on.
+    await pool.query(`UPDATE statutory_rules SET duration_value = 30 WHERE id = $1`, [foreclosureRuleId])
+    await statutory.sweep(pm, projectId)
+    const clock = (await statutory.clocks(pm, projectId)).find(
+      (c) => c.citation === 'TEST-LIEN-FORECLOSURE' && c.startedOn === '2026-04-10',
+    )
+    expect(clock?.dueOn).toBe('2026-07-09')
+    await pool.query(`UPDATE statutory_rules SET duration_value = 90 WHERE id = $1`, [foreclosureRuleId])
   })
 })

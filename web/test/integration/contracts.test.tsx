@@ -314,3 +314,37 @@ describe('the lien dates', () => {
     expect(warning.textContent).toMatch(/40 U\.S\.C/)
   })
 })
+
+describe('the dates nothing here witnesses', () => {
+  it('gives somewhere to type a recorded lien, and says why it has to be typed', async () => {
+    // Five of the eight statutory triggers are facts about the job and the
+    // job knows them. These three are external acts, so every rule hanging
+    // off one used to be skipped with a reason the customer could read and
+    // could not act on.
+    renderAsUser(harness, pmToken, <Contracts projectId={project.projectId} projectName={project.projectName} />)
+    await userEvent.click(await screen.findByRole('tab', { name: /Lien & bond/ }))
+
+    expect(await screen.findByText('Dates this product cannot see for itself')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/Instrument 2026/)).toBeInTheDocument()
+    // The date is the whole point, so nothing can be recorded without one.
+    expect(screen.getByRole('button', { name: 'Record it' })).toBeDisabled()
+  })
+
+  it('records one and shows it back with what it was', async () => {
+    renderAsUser(harness, pmToken, <Contracts projectId={project.projectId} projectName={project.projectName} />)
+    await userEvent.click(await screen.findByRole('tab', { name: /Lien & bond/ }))
+
+    const reference = await screen.findByPlaceholderText(/Instrument 2026/)
+    await userEvent.type(reference, 'Instrument 2026-0041882')
+    // The date field is a native date input, so it is typed as the browser
+    // presents it rather than as the API takes it.
+    await userEvent.type(document.querySelector('input[type="date"]') as HTMLInputElement, '2026-04-10')
+    await userEvent.click(screen.getByRole('button', { name: 'Record it' }))
+
+    // Listed back, because a lien typed in twice is a deadline computed
+    // twice, and the second one looks exactly as real as the first.
+    const row = (await screen.findByText('Instrument 2026-0041882')).closest('tr') as HTMLElement
+    expect(within(row).getByText('2026-04-10')).toBeInTheDocument()
+    expect(within(row).getByText('Lien recorded')).toBeInTheDocument()
+  })
+})

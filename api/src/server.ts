@@ -1219,6 +1219,22 @@ const ROUTES: Route[] = [
     statutory.sweep(actor, params['projectId'] as string),
   ),
 
+  // The three triggers this product does not witness. Without these routes
+  // every rule hanging off a recorded lien, a served termination or a payment
+  // falling due was skipped with a reason nobody could act on.
+  route('GET', '/projects/:projectId/statutory-events', async ({ actor, params, statutory }) => ({
+    events: await statutory.events(actor, params['projectId'] as string),
+  })),
+
+  route('POST', '/projects/:projectId/statutory-events', async ({ actor, params, body, statutory }) =>
+    statutory.recordEvent(actor, params['projectId'] as string, {
+      kind: body['kind'] as 'notice_of_termination' | 'lien_recorded' | 'payment_due',
+      occurredOn: String(body['occurredOn'] ?? ''),
+      reference: body['reference'] as string | undefined,
+      note: body['note'] as string | undefined,
+    }),
+  ),
+
   /**
    * The claim file.
    *

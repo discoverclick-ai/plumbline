@@ -366,8 +366,30 @@ export interface StatutoryClockView {
   dueOn: string
   warnOn: string
   triggeredBy: string
+  /** For the triggers a person typed in, the thing they typed. */
+  sourceEvent: { reference: string; note: string } | null
   noticeRecordId: string | null
   computation: Record<string, unknown>
+}
+
+/**
+ * One of the three triggers this product does not witness.
+ *
+ * A lien recorded at the county, a notice of termination served, a payment
+ * falling due under terms in a contract nobody here wrote. Somebody types
+ * these, because the alternative is guessing, and a guessed statutory
+ * deadline is worse than none: a contractor relies on it and loses money
+ * they have already earned.
+ */
+export type StatutoryEventKind = 'notice_of_termination' | 'lien_recorded' | 'payment_due'
+
+export interface StatutoryEventView {
+  id: string
+  kind: StatutoryEventKind
+  occurredOn: string
+  reference: string
+  note: string
+  recordedBy: string | null
 }
 
 export interface InvoiceView {
@@ -995,6 +1017,23 @@ export class ApiClient {
     },
   ): Promise<{ started: number; skipped: { citation: string; reason: string }[]; unverified: { citation: string; summary: string }[] }> {
     return this.request('PUT', `/projects/${projectId}/statutory-facts`, facts)
+  }
+
+  sweepStatutory(
+    projectId: string,
+  ): Promise<{ started: number; skipped: { citation: string; reason: string }[]; unverified: { citation: string; summary: string }[] }> {
+    return this.request('POST', `/projects/${projectId}/statutory-clocks/sweep`)
+  }
+
+  statutoryEvents(projectId: string): Promise<{ events: StatutoryEventView[] }> {
+    return this.request('GET', `/projects/${projectId}/statutory-events`)
+  }
+
+  recordStatutoryEvent(
+    projectId: string,
+    input: { kind: StatutoryEventKind; occurredOn: string; reference?: string; note?: string },
+  ): Promise<{ id: string }> {
+    return this.request('POST', `/projects/${projectId}/statutory-events`, input)
   }
 
   draftNotice(clockId: string): Promise<{ recordId: string; subject: string; body: string; missing: string[] }> {
