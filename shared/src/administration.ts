@@ -85,10 +85,28 @@ export class AdministrationService {
         name: input.name.trim(),
       })
 
-      // The person who starts a job is on it. Without this they would create
-      // a project and immediately be unable to open it, which is the first
-      // thing anybody would do and the first bug they would report.
-      await addProjectMember(tx, actor.tenantId, { projectId: id, userId: actor.userId })
+      // The person who starts a job is on it, AS ITS PROJECT MANAGER.
+      //
+      // Membership alone is not enough and an earlier version stopped there:
+      // with no template named, the member falls to the project-scope
+      // default, which for a general contractor's employee is Read Only. So
+      // they created a job and could not raise an RFI on it — the first
+      // thing anybody would do, and the first bug they would report.
+      //
+      // "Project Manager" is resolved against their OWN company kind, so an
+      // owner's employee starting a job gets the owner's version of it.
+      // Where a company kind has no such template the fallback is the
+      // default, which is the right way round: least privilege is the safe
+      // wrong answer and Read Only is recoverable by an administrator.
+      try {
+        await addProjectMember(tx, actor.tenantId, {
+          projectId: id,
+          userId: actor.userId,
+          permissionTemplateName: 'Project Manager',
+        })
+      } catch {
+        await addProjectMember(tx, actor.tenantId, { projectId: id, userId: actor.userId })
+      }
       return { id }
     })
   }

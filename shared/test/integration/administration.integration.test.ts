@@ -81,17 +81,30 @@ afterAll(async () => {
 })
 
 describe('starting a job', () => {
-  it('puts the person who started it on it', async () => {
+  it('puts the person who started it on it, able to actually run it', async () => {
     const project = await admin.projectStart(employee, { number: '26-101', name: 'Riverside Depot' })
 
-    // Without this they would create a project and immediately be unable to
-    // open it, which is the first thing anybody would do and the first bug
-    // they would report.
     const { rows } = await pool.query(
-      'SELECT 1 FROM project_memberships WHERE project_id = $1 AND user_id = $2',
+      `SELECT t.name FROM project_memberships m
+         JOIN permission_templates t ON t.id = m.permission_template_id
+        WHERE m.project_id = $1 AND m.user_id = $2`,
       [project.id, employee.userId],
     )
     expect(rows).toHaveLength(1)
+    // Membership alone is not enough, and an earlier version stopped there.
+    // With no template named the member falls to the project-scope default,
+    // which for a general contractor's employee is Read Only: they created a
+    // job and could not raise an RFI on it.
+    expect(rows[0]!.name).toBe('Project Manager')
+
+    const kernel = new (await import('../../src/kernel.js')).RecordKernel(pool)
+    const raised = await kernel.create(employee, {
+      projectId: project.id,
+      typeKey: 'rfi',
+      title: 'Can the person who started this job use it',
+      body: { question: 'Yes.' },
+    })
+    expect(raised.record.id).toBeTruthy()
   })
 
   it('refuses somebody whose template does not let them', async () => {

@@ -405,6 +405,16 @@ export interface TemplateView {
   isDefault: boolean
 }
 
+export interface SearchHit {
+  id: string
+  projectId: string
+  projectName: string
+  typeKey: string
+  designation: string
+  title: string
+  status: string
+}
+
 export class ApiClient {
   constructor(
     private readonly baseUrl: string,
@@ -458,6 +468,19 @@ export class ApiClient {
 
   projects(): Promise<{ projects: ProjectView[] }> {
     return this.request('GET', '/projects')
+  }
+
+  /**
+   * Across every project this person is on, unless one is named.
+   *
+   * The server decides what is visible; this sends the words and nothing
+   * else. A client that filtered by project before asking would be deciding
+   * what somebody may find, which is the server's job.
+   */
+  search(q: string, projectId?: string): Promise<{ results: SearchHit[] }> {
+    const query = new URLSearchParams({ q })
+    if (projectId) query.set('projectId', projectId)
+    return this.request('GET', `/search?${query}`)
   }
 
   members(projectId: string): Promise<{

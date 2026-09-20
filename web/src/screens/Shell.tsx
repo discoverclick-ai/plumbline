@@ -12,6 +12,7 @@ import { Chasing } from './Chasing.tsx'
 import { Drawings } from './Drawings.tsx'
 import { Photos } from './Photos.tsx'
 import { ProjectTeam } from './ProjectTeam.tsx'
+import { SearchBox } from './Search.tsx'
 import { SubmittalRegister } from './SubmittalRegister.tsx'
 import { SyncConflicts } from './SyncConflicts.tsx'
 import { CaptureInbox } from './CaptureInbox.tsx'
@@ -286,6 +287,14 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
           }}
           tabs={tabs}
         />
+        {/*
+          In the project nav rather than on a screen of its own, because
+          searching is something people do in the middle of doing something
+          else. It looks across every job they are on, not just this one.
+        */}
+        <div style={{ marginLeft: 'auto', display: 'flex', minWidth: 200, paddingLeft: 'var(--space-3)' }}>
+          <SearchBox onOpenRecord={(recordId) => setOpenRecordId(recordId)} />
+        </div>
       </nav>
 
       {/*
