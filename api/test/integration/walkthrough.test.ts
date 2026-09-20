@@ -1,6 +1,6 @@
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
-import { createPool, provisionTenant } from '@plumbline/shared'
+import { createPool, createUser, findTemplateByName, provisionTenant, withTenant } from '@plumbline/shared'
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { createApiServer } from '../../src/server.js'
@@ -50,10 +50,29 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 
-  await provisionTenant(pool, {
+  const tenant = await provisionTenant(pool, {
     tenantName: 'Walkthrough Builders',
     organizationKind: 'general_contractor',
     admin: { email: 'admin@walkthrough.test', name: 'Wes Admin', password: PASSWORD },
+  })
+
+  // The walkthrough runs as an ORDINARY EMPLOYEE, not as the company
+  // administrator. An administrator bypasses every permission check in the
+  // product, which makes them the weakest possible actor for a reachability
+  // test: they can reach everything by definition, so nothing they can do
+  // tells you a customer's project manager can do it.
+  //
+  // The first version of this test used the administrator and passed while
+  // `projectStart` was leaving its creator on Read Only.
+  await withTenant(pool, tenant.tenantId, async (tx) => {
+    await createUser(tx, tenant.tenantId, {
+      organizationId: tenant.organizationId,
+      email: 'pm@walkthrough.test',
+      name: 'Pat Moreno',
+      jobTitle: 'Project Manager',
+      password: PASSWORD,
+      companyPermissionTemplateId: await findTemplateByName(tx, tenant.tenantId, 'company', 'Employee'),
+    })
   })
 })
 
@@ -69,9 +88,15 @@ describe('a whole job, over the wire', () => {
   let budgetCodeId: string
   let rfiId: string
 
-  it('signs in', async () => {
-    token = (await call('POST', '/auth/sign-in', { email: 'admin@walkthrough.test', password: PASSWORD })).token
+  it('signs in as somebody who is not an administrator', async () => {
+    token = (await call('POST', '/auth/sign-in', { email: 'pm@walkthrough.test', password: PASSWORD })).token
     expect(token).toBeTruthy()
+
+    // Stated rather than assumed: if this person were an administrator the
+    // rest of the walkthrough would prove nothing, because an administrator
+    // is admin on every tool by definition.
+    const me = await call('GET', '/me')
+    expect(me.tools?.directory?.level ?? 'read_only').not.toBe('admin')
   })
 
   it('starts a job and puts the person who started it on it', async () => {
@@ -80,13 +105,26 @@ describe('a whole job, over the wire', () => {
     expect(mine.projects.map((p: { id: string }) => p.id)).toContain(projectId)
   })
 
-  it('adds the companies and a person, and puts them on the job', async () => {
+  it('refuses to let an ordinary employee change the company directory', async () => {
+    // Adding companies and people is a company administrator's job, and the
+    // walkthrough asserts that boundary rather than stepping around it.
+    await expect(call('POST', '/companies', { name: 'Nope', kind: 'supplier' })).rejects.toThrow(/403/)
+  })
+
+  it('adds the companies and a person, as the administrator who may', async () => {
+    const pmToken = token
+    token = (await call('POST', '/auth/sign-in', { email: 'admin@walkthrough.test', password: PASSWORD })).token
+
     steelOrgId = (
       await call('POST', '/companies', { name: 'Vega Steel', kind: 'specialty_contractor', trade: 'Structural Steel' })
     ).id
     const designId = (await call('POST', '/companies', { name: 'Bishop Architects', kind: 'architect' })).id
     architectId = (await call('POST', '/people', { organizationId: designId, email: 'ali@bishop.test', name: 'Ali Bishop' })).id
 
+    token = pmToken
+    // Back to the project manager, who may put people on their OWN job
+    // without being able to change the directory. That split is the whole
+    // point of the permission model and this is where it shows.
     await call('POST', `/projects/${projectId}/members`, { userId: architectId, permissionTemplateName: 'Design Team' })
     const team = await call('GET', `/projects/${projectId}/members`)
     expect(team.members.map((m: { name: string }) => m.name)).toContain('Ali Bishop')
