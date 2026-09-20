@@ -217,3 +217,47 @@ describe('the capture inbox', () => {
     expect(within(dialog).getByRole('button', { name: 'Reject' })).toBeDisabled()
   })
 })
+
+describe('words a machine heard', () => {
+  it('shows a transcript as a transcript, not as what somebody wrote', async () => {
+    // Somebody about to accept this is turning it into a record that gets
+    // read back in a claim. "No rebar" and "know rebar" sound identical, so
+    // which words were typed and which were heard is the difference between
+    // checking it and rubber-stamping it.
+    const pool = createPool({ connectionString: inject('databaseUrl') })
+    let proposalId: string
+    try {
+      harness.provider.push({ ...OBSERVATION_DRAFT, title: 'Ticket 114, Saturday overtime' })
+      const capture = new CaptureService(pool, harness.provider)
+      const actor = { tenantId: project.tenantId, userId: project.users.pm.id }
+      const signal = await capture.record(actor, {
+        projectId: project.projectId,
+        kind: 'document',
+        text: 'Ticket from Alvarez, bay 4',
+      })
+      await pool.query(
+        `UPDATE captures SET transcript = $2, transcript_model = 'claude-opus-5', transcribed_at = now()
+          WHERE id = $1`,
+        [signal.id, 'T&M TICKET 114\nSaturday overtime, 6 men, 4 hours'],
+      )
+      proposalId = (await capture.interpret(actor, signal.id)).id
+    } finally {
+      await pool.end()
+    }
+    expect(proposalId).toBeTruthy()
+
+    renderAsUser(
+      harness,
+      pmToken,
+      <CaptureInbox projectId={project.projectId} projectName={project.projectName} />,
+    )
+    const dialog = await reviewCard('Ticket 114, Saturday overtime')
+
+    // Both are there, and the heard words say where they came from. The
+    // capture is fetched after the dialog opens, so this waits for it.
+    expect(await within(dialog).findByText(/Ticket from Alvarez, bay 4/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/T&M TICKET 114/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Read from the attached file by claude-opus-5/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Check it against the original/)).toBeInTheDocument()
+  })
+})

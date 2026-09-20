@@ -87,7 +87,12 @@ export interface CaptureView {
   id: string
   projectId: string
   kind: 'photo' | 'voice' | 'document' | 'text' | 'email'
+  /** What a person typed. */
   text: string | null
+  /** A machine's reading of the file, kept apart from what a person typed. */
+  transcript: string | null
+  transcriptModel: string | null
+  transcribedAt: string | null
   capturedAt: string
   status: string
 }

@@ -48,7 +48,12 @@ export * from './capture/eval.js'
 export * from './capture/interpreter.js'
 export * from './capture/pricing.js'
 export * from './capture/service.js'
+export * from './capture/transcription.js'
 export { AnthropicInterpretationProvider, DEFAULT_MODEL } from './capture/providers/anthropic.js'
+export {
+  AnthropicTranscriptionProvider,
+  DEFAULT_TRANSCRIPTION_MODEL,
+} from './capture/providers/anthropic-transcription.js'
 export * as recordsRepository from './repositories/records.js'
 export { clearRecordTypeCache, getRecordType, loadRecordTypes } from './repositories/record-types.js'
 export { clearToolScopeCache, loadAccess, loadToolScopes } from './repositories/permissions.js'

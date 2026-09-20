@@ -166,9 +166,10 @@ beforeAll(async () => {
 
   await engine.fire()
 
-  const { rows } = await pool.query('SELECT id, notice_record_id FROM obligation_clocks WHERE project_id = $1', [
-    projectId,
-  ])
+  const { rows } = await pool.query(
+    'SELECT id, notice_record_id FROM obligation_clocks WHERE tenant_id = $1 AND project_id = $2',
+    [tenantId, projectId],
+  )
   clockId = rows[0]!.id
   noticeRecordId = rows[0]!.notice_record_id
 })

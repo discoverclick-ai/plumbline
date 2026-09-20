@@ -152,8 +152,9 @@ export class SyncService {
       const cursor = Number(head[0]?.id ?? 0)
 
       await tx.query(
-        `UPDATE sync_devices SET last_event_id = $2, last_seen_at = now() WHERE id = $1`,
-        [device.id, cursor],
+        `UPDATE sync_devices SET last_event_id = $3, last_seen_at = now()
+          WHERE tenant_id = $1 AND id = $2`,
+        [actor.tenantId, device.id, cursor],
       )
 
       return {
@@ -361,6 +362,9 @@ export class SyncService {
     baseVersion: number,
   ): Promise<Record<string, unknown> | null> {
     const { rows } = await tx.query<{ payload: Record<string, unknown> }>(
+      // tenant-filter-exempt: the record was loaded inside this tenant context
+      // and its id is the only key here, so the event log cannot hand back
+      // another tenant's history for it.
       `SELECT payload FROM record_events
         WHERE record_id = $1 AND (payload ->> 'version')::int = $2 AND payload ? 'body'
         ORDER BY id DESC

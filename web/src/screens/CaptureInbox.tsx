@@ -188,8 +188,32 @@ export function CaptureInbox({ projectId, projectName }: { projectId: string; pr
 
           <Card title={capture ? `What the ${capture.kind} said` : 'What the capture said'}>
             <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
-              {capture?.text ?? <span style={{ color: 'var(--ink-faint)' }}>Loading the original capture…</span>}
+              {capture === null ? (
+                <span style={{ color: 'var(--ink-faint)' }}>Loading the original capture…</span>
+              ) : (
+                (capture.text ?? <span style={{ color: 'var(--ink-faint)' }}>Nothing was typed with this.</span>)
+              )}
             </p>
+            {capture?.transcript ? (
+              // Marked as a transcript rather than run together with what the
+              // person typed. "No rebar" and "know rebar" sound identical, and
+              // somebody approving this is about to turn it into a record that
+              // gets read back in a claim. They should know which words were
+              // typed and which were heard.
+              <div
+                style={{
+                  margin: 'var(--space-3) 0 0',
+                  paddingTop: 'var(--space-3)',
+                  borderTop: '1px solid var(--line)',
+                }}
+              >
+                <div style={{ fontSize: 12, color: 'var(--ink-muted)', marginBottom: 4 }}>
+                  Read from the attached file by {capture.transcriptModel ?? 'a model'}. Check it against the
+                  original before you accept.
+                </div>
+                <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{capture.transcript}</p>
+              </div>
+            ) : null}
             {open.rationale && (
               <p
                 style={{

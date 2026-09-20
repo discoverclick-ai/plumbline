@@ -393,8 +393,9 @@ export class ClockEngine {
         // deadline passed unanswered is itself evidence, and a system that
         // tidied it away would be destroying the record of its own failure.
         await this.db.query(
-          `UPDATE obligation_clocks SET state = 'expired', updated_at = now() WHERE id = $1 AND state <> 'expired'`,
-          [clock.id],
+          `UPDATE obligation_clocks SET state = 'expired', updated_at = now()
+            WHERE tenant_id = $1 AND id = $2 AND state <> 'expired'`,
+          [clock.tenant_id, clock.id],
         )
         result.expired += 1
         continue
@@ -404,8 +405,9 @@ export class ClockEngine {
 
       await withTenant(this.db, clock.tenant_id, async (tx) => {
         await tx.query(
-          `UPDATE obligation_clocks SET state = 'in_court', promoted_at = now(), updated_at = now() WHERE id = $1`,
-          [clock.id],
+          `UPDATE obligation_clocks SET state = 'in_court', promoted_at = now(), updated_at = now()
+            WHERE tenant_id = $1 AND id = $2`,
+          [clock.tenant_id, clock.id],
         )
         if (!clock.notice_record_id) return
         // The deadline goes onto the assignment the record already has. The
@@ -414,10 +416,11 @@ export class ClockEngine {
         // overdue work already exist.
         await tx.query(
           `UPDATE record_assignments
-              SET due_at = $2,
-                  expected_action = $3
-            WHERE record_id = $1 AND released_at IS NULL`,
+              SET due_at = $3,
+                  expected_action = $4
+            WHERE tenant_id = $1 AND record_id = $2 AND released_at IS NULL`,
           [
+            clock.tenant_id,
             clock.notice_record_id,
             clock.due_at,
             `Give written notice under ${clock.clause_number ?? 'the contract'} or record why none is required`,
@@ -438,10 +441,10 @@ export class ClockEngine {
    * and a seam that is a log survives a replay.
    */
   async reconcile(scope?: { tenantId: string; projectId: string }): Promise<{ satisfied: number; stoodDown: number }> {
-    const { rows } = await this.db.query<{ id: string; record_id: string; to: string }>(
-      `SELECT k.id, k.notice_record_id AS record_id, r.status AS to
+    const { rows } = await this.db.query<{ id: string; tenant_id: string; record_id: string; to: string }>(
+      `SELECT k.id, k.tenant_id, k.notice_record_id AS record_id, r.status AS to
          FROM obligation_clocks k
-         JOIN records r ON r.id = k.notice_record_id
+         JOIN records r ON r.id = k.notice_record_id AND r.tenant_id = k.tenant_id
         WHERE k.state IN ('watching', 'in_court', 'expired')
           AND r.status IN ('issued', 'acknowledged', 'not_required')
           AND ($1::uuid IS NULL OR k.tenant_id = $1::uuid)
@@ -457,9 +460,9 @@ export class ClockEngine {
       // where a person wrote it. Copying it here would let the two drift.
       await this.db.query(
         `UPDATE obligation_clocks
-            SET state = $2::clock_state, satisfied_at = now(), satisfied_by_record_id = $3, updated_at = now()
-          WHERE id = $1`,
-        [row.id, state, row.record_id],
+            SET state = $3::clock_state, satisfied_at = now(), satisfied_by_record_id = $4, updated_at = now()
+          WHERE tenant_id = $1 AND id = $2`,
+        [row.tenant_id, row.id, state, row.record_id],
       )
       if (state === 'satisfied') satisfied += 1
       else stoodDown += 1

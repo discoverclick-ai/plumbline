@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import {
   AnthropicInterpretationProvider,
+  AnthropicTranscriptionProvider,
   AdministrationService,
   addSegmentValue,
   createBudgetCode,
@@ -50,6 +51,7 @@ import {
   type BlobStore,
   type Db,
   type InterpretationProvider,
+  type TranscriptionProvider,
   type ParticipantRole,
   type SessionIdentity,
 } from '@plumbline/shared'
@@ -242,11 +244,11 @@ const ROUTES: Route[] = [
       const { rows } = await tx.query(
         `SELECT u.id AS "userId", u.name, u.job_title AS "jobTitle", o.name AS organization
            FROM project_memberships m
-           JOIN users u ON u.id = m.user_id
-           JOIN organizations o ON o.id = u.organization_id
-          WHERE m.project_id = $1 AND u.is_active
+           JOIN users u ON u.id = m.user_id AND u.tenant_id = m.tenant_id
+           JOIN organizations o ON o.id = u.organization_id AND o.tenant_id = u.tenant_id
+          WHERE m.tenant_id = $1 AND m.project_id = $2 AND u.is_active
           ORDER BY o.name, u.name`,
-        [projectId],
+        [actor.tenantId, projectId],
       )
       return { members: rows }
     }),
@@ -392,6 +394,15 @@ const ROUTES: Route[] = [
 
   route('GET', '/captures/:captureId', async ({ capture, actor, params }) =>
     capture.getCapture(actor, params['captureId'] as string),
+  ),
+
+  // Interpretation transcribes on its way in, so this route exists for the
+  // two cases that one does not cover: reading a file without proposing a
+  // record off it, and re-reading one whose transcript was wrong.
+  route('POST', '/captures/:captureId/transcribe', async ({ capture, actor, params, body }) =>
+    capture.transcribe(actor, params['captureId'] as string, {
+      force: body['force'] === true,
+    }),
   ),
 
   route('POST', '/captures/:captureId/interpret', async ({ capture, actor, params }) =>
@@ -1343,6 +1354,7 @@ export interface ApiServerOptions {
    * model key to boot.
    */
   interpretationProvider?: InterpretationProvider
+  transcriptionProvider?: TranscriptionProvider
   /**
    * Where attachments live. Defaults to a directory on this machine, which is
    * the right answer for a single-server install and for plenty of
@@ -1442,6 +1454,13 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
     captureService ??= new CaptureService(
       pool as Db,
       options.interpretationProvider ?? new AnthropicInterpretationProvider(),
+      {
+        // Thunks, not instances. Constructing a model client can throw in
+        // some runtimes, and building one eagerly here would take every
+        // route on the server down with it — which it did once already.
+        transcriber: () => options.transcriptionProvider ?? new AnthropicTranscriptionProvider(),
+        blobs: () => blobStore(),
+      },
     )
     return captureService
   }

@@ -15,6 +15,8 @@ import {
   type RosterMember,
 } from './interpreter.js'
 import { estimateCostMicros } from './pricing.js'
+import type { TranscriptionProvider } from './transcription.js'
+import type { BlobStore } from '../storage/index.js'
 
 /**
  * The capture pipeline: signal in, proposed record out, human at the gate.
@@ -38,7 +40,19 @@ export interface Capture {
   storageKey: string | null
   contentType: string | null
   byteSize: number | null
+  /** What a person typed. Never a machine's reading of anything. */
   text: string | null
+  /**
+   * A machine's best reading of the recording or the image.
+   *
+   * Kept apart from `text` because they are not the same kind of fact and
+   * merging them loses the distinction exactly where it matters: what a
+   * reviewer is asked to approve would look like something they wrote.
+   * "No rebar" and "know rebar" sound identical.
+   */
+  transcript: string | null
+  transcriptModel: string | null
+  transcribedAt: string | null
   capturedAt: string
   latitude: number | null
   longitude: number | null
@@ -96,6 +110,9 @@ interface CaptureRow {
   content_type: string | null
   byte_size: number | null
   text: string | null
+  transcript: string | null
+  transcript_model: string | null
+  transcribed_at: Date | null
   captured_at: Date
   latitude: string | null
   longitude: string | null
@@ -105,7 +122,25 @@ interface CaptureRow {
 }
 
 const CAPTURE_COLUMNS = `id, project_id, captured_by, kind, storage_key, content_type, byte_size, text,
+                         transcript, transcript_model, transcribed_at,
                          captured_at, latitude, longitude, status, failure_reason, created_at`
+
+/**
+ * Everything there is to read, labelled.
+ *
+ * The transcript is marked as one rather than run together with the typed
+ * note, because the interpreter should weigh them differently: a name typed
+ * by the person who was there beats the same name as a microphone heard it,
+ * and a model given one undifferentiated blob has no way to know which is
+ * which.
+ */
+export function readableText(capture: Pick<Capture, 'text' | 'transcript'>): string {
+  const typed = capture.text?.trim() ?? ''
+  const heard = capture.transcript?.trim() ?? ''
+  if (typed && heard) return `${typed}\n\n[Transcribed from the attached file]\n${heard}`
+  if (heard) return `[Transcribed from the attached file]\n${heard}`
+  return typed
+}
 
 function toCapture(row: CaptureRow): Capture {
   return {
@@ -117,6 +152,9 @@ function toCapture(row: CaptureRow): Capture {
     contentType: row.content_type,
     byteSize: row.byte_size,
     text: row.text,
+    transcript: row.transcript,
+    transcriptModel: row.transcript_model,
+    transcribedAt: row.transcribed_at === null ? null : row.transcribed_at.toISOString(),
     capturedAt: row.captured_at.toISOString(),
     latitude: row.latitude === null ? null : Number(row.latitude),
     longitude: row.longitude === null ? null : Number(row.longitude),
@@ -178,8 +216,117 @@ export class CaptureService {
   constructor(
     private readonly db: Db,
     private readonly provider: InterpretationProvider,
-    private readonly options: { maxTokens?: number } = {},
+    private readonly options: {
+      maxTokens?: number
+      /**
+       * Bytes to words, in front of the interpreter. Optional, and a
+       * deployment without one still serves every route: a voice memo or a
+       * photograph sits in the inbox with a plain message rather than taking
+       * the product down.
+       *
+       * A thunk because constructing an SDK client can throw in some
+       * runtimes, and the alternative — building it per request — took every
+       * route with it once already.
+       */
+      transcriber?: TranscriptionProvider | (() => TranscriptionProvider)
+      blobs?: BlobStore | (() => BlobStore)
+    } = {},
   ) {}
+
+  private transcriber(): TranscriptionProvider | null {
+    const configured = this.options.transcriber
+    if (!configured) return null
+    return typeof configured === 'function' ? configured() : configured
+  }
+
+  private blobs(): BlobStore | null {
+    const configured = this.options.blobs
+    if (!configured) return null
+    return typeof configured === 'function' ? configured() : configured
+  }
+
+  /**
+   * Reads the bytes and writes down what they say.
+   *
+   * Idempotent, because it costs money and because a second run would
+   * overwrite a transcript somebody may already have read and corrected
+   * against. Re-running is a deliberate act, not a side effect of opening
+   * the inbox twice.
+   */
+  async transcribe(actor: Actor, captureId: string, options: { force?: boolean } = {}): Promise<Capture> {
+    const prepared = await withTenant(this.db, actor.tenantId, async (tx) => {
+      const capture = await this.loadCapture(tx, actor.tenantId, captureId)
+      const access = await this.accessFor(tx, actor, capture.projectId)
+      assertLevel(access, CAPTURE_TOOL, 'read_only')
+      return capture
+    })
+
+    if (prepared.transcript && !options.force) return prepared
+
+    if (!prepared.storageKey || !prepared.contentType) {
+      throw new ValidationError('There is no file on this capture to read', [
+        { field: 'storageKey', message: 'A transcript needs the original recording or image' },
+      ])
+    }
+
+    const transcriber = this.transcriber()
+    const blobs = this.blobs()
+    if (!transcriber || !blobs) {
+      throw new KernelError(
+        'transcription_unavailable',
+        'Nothing is configured here that can read a file',
+        503,
+      )
+    }
+    if (!transcriber.handles(prepared.contentType)) {
+      // Named rather than swallowed. A capture that silently stays blank is a
+      // capture nobody comes back to, and a voice memo from a foreman about a
+      // delay is exactly the one worth coming back to.
+      throw new KernelError(
+        'transcription_unsupported',
+        `Nothing configured here can read ${prepared.contentType}`,
+        422,
+        { contentType: prepared.contentType },
+      )
+    }
+
+    const bytes = await blobs.get(prepared.storageKey)
+    const result = await transcriber.transcribe({
+      kind: prepared.kind,
+      contentType: prepared.contentType,
+      bytes,
+      ...(prepared.text?.trim() ? { hint: prepared.text.trim() } : {}),
+    })
+
+    return withTenant(this.db, actor.tenantId, async (tx) => {
+      const { rows } = await tx.query<CaptureRow>(
+        `UPDATE captures
+            SET transcript = $3, transcript_model = $4, transcribed_at = now()
+          WHERE tenant_id = $1 AND id = $2
+        RETURNING ${CAPTURE_COLUMNS}`,
+        [actor.tenantId, captureId, result.text, result.model],
+      )
+      const cost = estimateCostMicros(result.model, result.usage)
+      await tx.query(
+        `INSERT INTO ai_usage (tenant_id, purpose, model, input_tokens, output_tokens,
+                               cache_read_tokens, cache_write_tokens, cost_micros, capture_id)
+              VALUES ($1, 'capture.transcribe', $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          actor.tenantId,
+          result.model,
+          result.usage.inputTokens,
+          result.usage.outputTokens,
+          result.usage.cacheReadTokens,
+          result.usage.cacheWriteTokens,
+          cost.costMicros,
+          captureId,
+        ],
+      )
+      const row = rows[0]
+      if (!row) throw new NotFoundError('capture', captureId)
+      return toCapture(row)
+    })
+  }
 
   /**
    * Take a capture from the field.
@@ -227,6 +374,30 @@ export class CaptureService {
   }
 
   /**
+   * Transcribes when there is something to transcribe and nothing yet read.
+   *
+   * Swallows its own failures on purpose. This runs on the way into
+   * interpretation, and a deployment with no reader configured, or a capture
+   * whose media nothing can read, must still be able to interpret whatever
+   * text the person typed. The refusal that matters — "there is nothing here
+   * to read at all" — is raised by `interpret` itself a moment later, once it
+   * knows there is genuinely nothing.
+   */
+  private async transcribeIfNeeded(actor: Actor, captureId: string): Promise<void> {
+    if (!this.options.transcriber || !this.options.blobs) return
+    try {
+      const capture = await withTenant(this.db, actor.tenantId, (tx) => this.loadCapture(tx, actor.tenantId, captureId))
+      if (readableText(capture) || !capture.storageKey) return
+      await this.transcribe(actor, captureId)
+    } catch (err) {
+      // A permission refusal is not this method's to swallow: it means the
+      // caller had no business here, and interpret will refuse for the same
+      // reason on its own.
+      if (err instanceof PermissionDeniedError) throw err
+    }
+  }
+
+  /**
    * Read a capture and draft the record it should become.
    *
    * Every piece of grounding handed to the model — the type registry, the
@@ -236,25 +407,42 @@ export class CaptureService {
    * of the transaction rather than an instruction in the prompt.
    */
   async interpret(actor: Actor, captureId: string): Promise<Proposal> {
+    // Reading the file first, rather than telling somebody to press another
+    // button. A voice memo and a photograph of a field ticket are the two
+    // things a phone on a jobsite is good at producing, and until this ran
+    // both of them reached the inbox and stopped there.
+    await this.transcribeIfNeeded(actor, captureId)
+
     const prepared = await withTenant(this.db, actor.tenantId, async (tx) => {
-      const capture = await this.loadCapture(tx, captureId)
+      const capture = await this.loadCapture(tx, actor.tenantId, captureId)
       const access = await this.accessFor(tx, actor, capture.projectId)
       assertLevel(access, CAPTURE_TOOL, 'read_only')
 
-      if (!capture.text?.trim()) {
-        throw new ValidationError('This capture has no text to interpret yet', [
-          { field: 'text', message: 'Transcription or extraction has not run' },
+      if (!readableText(capture)) {
+        throw new ValidationError('This capture has nothing to read yet', [
+          {
+            field: 'text',
+            message: capture.storageKey
+              ? 'Nothing configured here could read the file on it'
+              : 'Nothing was captured',
+          },
         ])
       }
 
       const types = await loadRecordTypes(tx)
-      const roster = await this.loadRoster(tx, capture.projectId)
-      const { rows } = await tx.query<{ name: string }>('SELECT name FROM projects WHERE id = $1', [capture.projectId])
+      const roster = await this.loadRoster(tx, actor.tenantId, capture.projectId)
+      const { rows } = await tx.query<{ name: string }>(
+        'SELECT name FROM projects WHERE tenant_id = $1 AND id = $2',
+        [actor.tenantId, capture.projectId],
+      )
       const projectName = rows[0]?.name ?? 'this project'
 
       const capturedBy = roster.find((m) => m.userId === capture.capturedBy)
 
-      await tx.query(`UPDATE captures SET status = 'interpreting' WHERE id = $1`, [captureId])
+      await tx.query(`UPDATE captures SET status = 'interpreting' WHERE tenant_id = $1 AND id = $2`, [
+        actor.tenantId,
+        captureId,
+      ])
 
       return { capture, types, roster, projectName, capturedByName: capturedBy?.name }
     })
@@ -269,7 +457,10 @@ export class CaptureService {
         system: buildSystemPrompt([...prepared.types.values()], prepared.roster, prepared.projectName),
         userContent: buildUserContent({
           kind: prepared.capture.kind,
-          text: prepared.capture.text ?? '',
+          // Both, when there are both. A voice memo with a typed note is
+          // both, and the note is usually where the names and the submittal
+          // numbers the transcript mangled are spelled correctly.
+          text: readableText(prepared.capture),
           capturedAt: prepared.capture.capturedAt,
           latitude: prepared.capture.latitude,
           longitude: prepared.capture.longitude,
@@ -307,10 +498,15 @@ export class CaptureService {
       // A failed interpretation must never lose the capture. The signal is the
       // valuable part; the draft can be retried.
       await withTenant(this.db, actor.tenantId, (tx) =>
-        tx.query(`UPDATE captures SET status = 'failed', failure_reason = $2 WHERE id = $1`, [
-          captureId,
-          err instanceof Error ? err.message.slice(0, 500) : 'interpretation failed',
-        ]),
+        tx.query(
+          `UPDATE captures SET status = 'failed', failure_reason = $3
+            WHERE tenant_id = $1 AND id = $2`,
+          [
+            actor.tenantId,
+            captureId,
+            err instanceof Error ? err.message.slice(0, 500) : 'interpretation failed',
+          ],
+        ),
       )
       throw err
     }
@@ -320,8 +516,8 @@ export class CaptureService {
       // which is also what the partial unique index enforces.
       await tx.query(
         `UPDATE capture_proposals SET status = 'superseded', decided_at = now()
-          WHERE capture_id = $1 AND status = 'pending'`,
-        [captureId],
+          WHERE tenant_id = $1 AND capture_id = $2 AND status = 'pending'`,
+        [actor.tenantId, captureId],
       )
 
       const { rows } = await tx.query<ProposalRow>(
@@ -343,7 +539,10 @@ export class CaptureService {
           JSON.stringify(parsed.issues),
         ],
       )
-      await tx.query(`UPDATE captures SET status = 'interpreted', failure_reason = NULL WHERE id = $1`, [captureId])
+      await tx.query(
+        `UPDATE captures SET status = 'interpreted', failure_reason = NULL WHERE tenant_id = $1 AND id = $2`,
+        [actor.tenantId, captureId],
+      )
 
       const row = rows[0]
       if (!row) throw new Error('proposal insert returned no row')
@@ -368,10 +567,10 @@ export class CaptureService {
       const { rows } = await tx.query<ProposalRow>(
         `SELECT ${PROPOSAL_COLUMNS}
            FROM capture_proposals
-          WHERE project_id = $1 AND status = $2
+          WHERE tenant_id = $1 AND project_id = $2 AND status = $3
           ORDER BY created_at DESC
-          LIMIT $3`,
-        [filter.projectId, filter.status ?? 'pending', Math.min(filter.limit ?? 50, 200)],
+          LIMIT $4`,
+        [actor.tenantId, filter.projectId, filter.status ?? 'pending', Math.min(filter.limit ?? 50, 200)],
       )
 
       const types = await loadRecordTypes(tx)
@@ -386,7 +585,7 @@ export class CaptureService {
 
   async getCapture(actor: Actor, captureId: string): Promise<Capture> {
     return withTenant(this.db, actor.tenantId, async (tx) => {
-      const capture = await this.loadCapture(tx, captureId)
+      const capture = await this.loadCapture(tx, actor.tenantId, captureId)
       const access = await this.accessFor(tx, actor, capture.projectId)
       assertLevel(access, CAPTURE_TOOL, 'read_only')
       return capture
@@ -405,7 +604,7 @@ export class CaptureService {
    */
   async accept(actor: Actor, proposalId: string, edits: AcceptEdits = {}): Promise<{ proposal: Proposal; record: RecordView }> {
     return withTenant(this.db, actor.tenantId, async (tx) => {
-      const proposal = await this.loadProposalForUpdate(tx, proposalId)
+      const proposal = await this.loadProposalForUpdate(tx, actor.tenantId, proposalId)
       if (proposal.status !== 'pending') {
         throw new KernelError('proposal_decided', `This proposal was already ${proposal.status}`, 409, {
           status: proposal.status,
@@ -439,10 +638,11 @@ export class CaptureService {
 
       await tx.query(
         `UPDATE capture_proposals
-            SET status = 'accepted', edited = $2, decided_by = $3, decided_at = now(), record_id = $4,
-                title = $5, body = $6::jsonb, participants = $7::jsonb
-          WHERE id = $1`,
+            SET status = 'accepted', edited = $3, decided_by = $4, decided_at = now(), record_id = $5,
+                title = $6, body = $7::jsonb, participants = $8::jsonb
+          WHERE tenant_id = $1 AND id = $2`,
         [
+          actor.tenantId,
           proposalId,
           edited,
           actor.userId,
@@ -456,7 +656,7 @@ export class CaptureService {
       // Provenance, on the record itself: this came from signal, an agent read
       // it, a named human accepted it. A year from now, in a claim, that chain
       // is the answer to "who decided this".
-      const capture = await this.loadCapture(tx, proposal.captureId)
+      const capture = await this.loadCapture(tx, actor.tenantId, proposal.captureId)
       await tx.query(
         `INSERT INTO record_events (tenant_id, project_id, record_id, type_key, event, payload, actor_user_id)
               VALUES ($1, $2, $3, $4, 'record.accepted_from_capture', $5::jsonb, $6)`,
@@ -494,14 +694,14 @@ export class CaptureService {
         )
       }
 
-      const updated = await this.loadProposal(tx, proposalId)
+      const updated = await this.loadProposal(tx, actor.tenantId, proposalId)
       return { proposal: updated, record }
     })
   }
 
   async reject(actor: Actor, proposalId: string, note?: string): Promise<Proposal> {
     return withTenant(this.db, actor.tenantId, async (tx) => {
-      const proposal = await this.loadProposalForUpdate(tx, proposalId)
+      const proposal = await this.loadProposalForUpdate(tx, actor.tenantId, proposalId)
       if (proposal.status !== 'pending') {
         throw new KernelError('proposal_decided', `This proposal was already ${proposal.status}`, 409, {
           status: proposal.status,
@@ -516,15 +716,18 @@ export class CaptureService {
 
       await tx.query(
         `UPDATE capture_proposals
-            SET status = 'rejected', decided_by = $2, decided_at = now(), decision_note = $3
-          WHERE id = $1`,
-        [proposalId, actor.userId, note ?? null],
+            SET status = 'rejected', decided_by = $3, decided_at = now(), decision_note = $4
+          WHERE tenant_id = $1 AND id = $2`,
+        [actor.tenantId, proposalId, actor.userId, note ?? null],
       )
       // The capture is dismissed with its draft: the signal stays, and it can
       // be re-interpreted later when the type registry or the prompt improves.
-      await tx.query(`UPDATE captures SET status = 'dismissed' WHERE id = $1`, [proposal.captureId])
+      await tx.query(`UPDATE captures SET status = 'dismissed' WHERE tenant_id = $1 AND id = $2`, [
+        actor.tenantId,
+        proposal.captureId,
+      ])
 
-      return this.loadProposal(tx, proposalId)
+      return this.loadProposal(tx, actor.tenantId, proposalId)
     })
   }
 
@@ -561,22 +764,34 @@ export class CaptureService {
         accepted_unedited: number
         rejected: number
       }>(
+        // The tenant filter is not belt and braces here. With no project
+        // given this counts across the WHOLE table, so without it the company
+        // statistics screen reports every capture in the database — which is
+        // every customer's, and the row-level policy is the only thing that
+        // was stopping it.
         `SELECT
-           (SELECT COUNT(*) FROM captures c WHERE ($1::uuid IS NULL OR c.project_id = $1))::int AS captures,
-           (SELECT COUNT(*) FROM capture_proposals p WHERE ($1::uuid IS NULL OR p.project_id = $1))::int AS proposals,
-           (SELECT COUNT(*) FROM capture_proposals p WHERE ($1::uuid IS NULL OR p.project_id = $1)
+           (SELECT COUNT(*) FROM captures c
+             WHERE c.tenant_id = $1 AND ($2::uuid IS NULL OR c.project_id = $2))::int AS captures,
+           (SELECT COUNT(*) FROM capture_proposals p
+             WHERE p.tenant_id = $1 AND ($2::uuid IS NULL OR p.project_id = $2))::int AS proposals,
+           (SELECT COUNT(*) FROM capture_proposals p
+             WHERE p.tenant_id = $1 AND ($2::uuid IS NULL OR p.project_id = $2)
               AND p.status = 'accepted')::int AS accepted,
-           (SELECT COUNT(*) FROM capture_proposals p WHERE ($1::uuid IS NULL OR p.project_id = $1)
+           (SELECT COUNT(*) FROM capture_proposals p
+             WHERE p.tenant_id = $1 AND ($2::uuid IS NULL OR p.project_id = $2)
               AND p.status = 'accepted' AND NOT p.edited)::int AS accepted_unedited,
-           (SELECT COUNT(*) FROM capture_proposals p WHERE ($1::uuid IS NULL OR p.project_id = $1)
+           (SELECT COUNT(*) FROM capture_proposals p
+             WHERE p.tenant_id = $1 AND ($2::uuid IS NULL OR p.project_id = $2)
               AND p.status = 'rejected')::int AS rejected`,
-        [filter.projectId ?? null],
+        [actor.tenantId, filter.projectId ?? null],
       )
 
       const { rows: costRows } = await tx.query<{ cost: string | null }>(
         `SELECT SUM(cost_micros) AS cost FROM ai_usage
-          WHERE ($1::uuid IS NULL OR capture_id IN (SELECT id FROM captures WHERE project_id = $1))`,
-        [filter.projectId ?? null],
+          WHERE tenant_id = $1
+            AND ($2::uuid IS NULL
+                 OR capture_id IN (SELECT id FROM captures WHERE tenant_id = $1 AND project_id = $2))`,
+        [actor.tenantId, filter.projectId ?? null],
       )
 
       const counts = rows[0]
@@ -592,39 +807,45 @@ export class CaptureService {
   }
 
   private async accessFor(tx: Db, actor: Actor, projectId: string): Promise<AccessSnapshot> {
-    const { rows } = await tx.query('SELECT 1 FROM projects WHERE id = $1', [projectId])
+    const { rows } = await tx.query('SELECT 1 FROM projects WHERE tenant_id = $1 AND id = $2', [
+      actor.tenantId,
+      projectId,
+    ])
     if (rows.length === 0) throw new NotFoundError('project', projectId)
     return loadAccess(tx, { userId: actor.userId, tenantId: actor.tenantId, projectId })
   }
 
-  private async loadCapture(tx: Db, captureId: string): Promise<Capture> {
-    const { rows } = await tx.query<CaptureRow>(`SELECT ${CAPTURE_COLUMNS} FROM captures WHERE id = $1`, [captureId])
+  private async loadCapture(tx: Db, tenantId: string, captureId: string): Promise<Capture> {
+    const { rows } = await tx.query<CaptureRow>(
+      `SELECT ${CAPTURE_COLUMNS} FROM captures WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, captureId],
+    )
     const row = rows[0]
     if (!row) throw new NotFoundError('capture', captureId)
     return toCapture(row)
   }
 
-  private async loadProposal(tx: Db, proposalId: string): Promise<Proposal> {
+  private async loadProposal(tx: Db, tenantId: string, proposalId: string): Promise<Proposal> {
     const { rows } = await tx.query<ProposalRow>(
-      `SELECT ${PROPOSAL_COLUMNS} FROM capture_proposals WHERE id = $1`,
-      [proposalId],
+      `SELECT ${PROPOSAL_COLUMNS} FROM capture_proposals WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, proposalId],
     )
     const row = rows[0]
     if (!row) throw new NotFoundError('proposal', proposalId)
     return toProposal(row)
   }
 
-  private async loadProposalForUpdate(tx: Db, proposalId: string): Promise<Proposal> {
+  private async loadProposalForUpdate(tx: Db, tenantId: string, proposalId: string): Promise<Proposal> {
     const { rows } = await tx.query<ProposalRow>(
-      `SELECT ${PROPOSAL_COLUMNS} FROM capture_proposals WHERE id = $1 FOR UPDATE`,
-      [proposalId],
+      `SELECT ${PROPOSAL_COLUMNS} FROM capture_proposals WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
+      [tenantId, proposalId],
     )
     const row = rows[0]
     if (!row) throw new NotFoundError('proposal', proposalId)
     return toProposal(row)
   }
 
-  private async loadRoster(tx: Db, projectId: string): Promise<RosterMember[]> {
+  private async loadRoster(tx: Db, tenantId: string, projectId: string): Promise<RosterMember[]> {
     const { rows } = await tx.query<{
       id: string
       name: string
@@ -633,11 +854,11 @@ export class CaptureService {
     }>(
       `SELECT u.id, u.name, u.job_title, o.name AS organization
          FROM project_memberships m
-         JOIN users u ON u.id = m.user_id
-         JOIN organizations o ON o.id = u.organization_id
-        WHERE m.project_id = $1 AND u.is_active
+         JOIN users u ON u.id = m.user_id AND u.tenant_id = m.tenant_id
+         JOIN organizations o ON o.id = u.organization_id AND o.tenant_id = u.tenant_id
+        WHERE m.tenant_id = $1 AND m.project_id = $2 AND u.is_active
         ORDER BY o.name, u.name`,
-      [projectId],
+      [tenantId, projectId],
     )
     return rows.map((r) => ({
       userId: r.id,
