@@ -304,3 +304,71 @@ describe('writing a subcontract in', () => {
     expect(options.some((o) => o?.includes('Architects'))).toBe(false)
   })
 })
+
+describe('entering a cost by hand', () => {
+  it('shows what is already behind the line before asking for another', async () => {
+    // The mistake this panel exists to prevent. The budget line says
+    // $1,180,000 committed; that total cannot tell a project manager whether
+    // the subcontract in their hand is already one of those dollars, and a
+    // double entry is not a typo somebody spots — it is a job that looks over
+    // budget until an accountant unpicks it three weeks later.
+    renderAsUser(harness, pmToken, <Budget projectId={project.projectId} projectName={project.projectName} />)
+    await userEvent.click(await screen.findByText('26 00 00.S'))
+
+    expect(await screen.findByRole('button', { name: 'Record it' })).toBeInTheDocument()
+
+    // The $100,000 actual on this line came from approving payment
+    // application APP-001, and the row says so. This assertion is the whole
+    // point of the panel: it was written because the invoicing service
+    // posted its cost entry with a NULL source and the approver in
+    // created_by, so on screen an approved invoice was indistinguishable
+    // from something a person typed. A PM reading "Entered by Pat Moreno"
+    // against $100,000 they do not recognise enters it again.
+    const posted = (await screen.findByText('From Payment application APP-001')).closest('tr') as HTMLElement
+    expect(within(posted).getByText('$100,000.00')).toBeInTheDocument()
+    expect(posted.textContent).not.toMatch(/Entered by/)
+    expect(await screen.findByText(/posted automatically from a record/)).toBeInTheDocument()
+  })
+
+  it('records a cost and the budget moves', async () => {
+    renderAsUser(harness, pmToken, <Budget projectId={project.projectId} projectName={project.projectName} />)
+    await userEvent.click(await screen.findByText('26 00 00.S'))
+    await screen.findByRole('button', { name: 'Record it' })
+
+    await userEvent.type(screen.getByPlaceholderText('18400.00'), '42000.00')
+    await userEvent.type(
+      screen.getByPlaceholderText('T&M ticket 114, Saturday overtime'),
+      'T&M ticket 114',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Record it' }))
+
+    // In the list underneath, named as a hand entry rather than something
+    // posted, because that is what says whose it is to correct.
+    const entry = await screen.findByText('T&M ticket 114')
+    const row = entry.closest('tr') as HTMLElement
+    expect(within(row).getByText('$42,000.00')).toBeInTheDocument()
+    expect(within(row).getByText('actual')).toBeInTheDocument()
+
+    // Hand-entered, so it says whose it is to correct — the opposite of the
+    // invoice row above it.
+    expect(row.textContent).toMatch(/Entered by/)
+
+    // And the budget table behind it reloaded. A figure that lags by one
+    // entry is exactly how somebody enters the same cost a second time.
+    // $100,000 from the approved invoice plus the $42,000 just typed.
+    await waitFor(() => {
+      const line = screen.getByText('26 00 00.S').closest('tr') as HTMLElement
+      expect(within(line).getByText('$142,000.00')).toBeInTheDocument()
+    })
+  })
+
+  it('does not offer the panel to somebody who may not see cost figures', async () => {
+    // A superintendent sees the scopes and the quantities. Opening a panel
+    // whose every row is a dollar figure would hand them the budget the rest
+    // of the screen is carefully withholding.
+    renderAsUser(harness, superToken, <Budget projectId={project.projectId} projectName={project.projectName} />)
+    await userEvent.click(await screen.findByText('26 00 00.S'))
+
+    expect(screen.queryByRole('button', { name: 'Record it' })).not.toBeInTheDocument()
+  })
+})

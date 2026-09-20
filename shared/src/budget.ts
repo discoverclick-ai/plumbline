@@ -43,6 +43,24 @@ export interface BudgetLineSummary {
   projectedOverUnder: string | null
 }
 
+/** One recorded dollar, and where it came from. */
+export interface CostEntryView {
+  id: string
+  budgetCodeId: string
+  budgetCode: string
+  kind: 'committed' | 'actual' | 'pending' | 'forecast'
+  amount: string
+  quantity: string | null
+  description: string
+  incurredOn: string
+  sourceRecordId: string | null
+  /** The record it came off, named as the job names it, or null for a hand entry. */
+  source: string | null
+  /** True when the posting worker wrote it, which means it will keep itself current. */
+  posted: boolean
+  enteredBy: string | null
+}
+
 export interface BudgetView {
   /** False for somebody who may see the budget but not what it costs. */
   costsVisible: boolean
@@ -50,6 +68,20 @@ export interface BudgetView {
 }
 
 const MONEY = /^-?\d{1,16}(\.\d{1,2})?$/
+
+/**
+ * Four decimal places, because the column has four and a quantity is not
+ * money: 0.3333 of an acre is a real number somebody types.
+ */
+const QUANTITY = /^\d{1,14}(\.\d{1,4})?$/
+
+function assertQuantity(value: string): void {
+  if (!QUANTITY.test(value)) {
+    throw new ValidationError('That is not a quantity', [
+      { field: 'quantity', message: 'Use a positive number, at most four decimal places' },
+    ])
+  }
+}
 
 function assertMoney(value: string, field: string): void {
   if (!MONEY.test(value)) {
@@ -195,18 +227,29 @@ export class BudgetService {
       budgetCodeId: string
       kind: 'committed' | 'actual' | 'pending' | 'forecast'
       amount: string
+      /**
+       * Units placed, for a line that is bought by the unit.
+       *
+       * This travelled nowhere for a while, and the consequence was quiet: the
+       * budget view rolls `quantity_to_date` up from actual-kind cost entries,
+       * so with nothing ever writing the column it summed to zero forever. The
+       * one number a superintendent is shown INSTEAD of dollars read as "none
+       * installed" on a job that was half built.
+       */
+      quantity?: string
       description?: string
       sourceRecordId?: string
       incurredOn?: string
     },
   ): Promise<{ id: string }> {
     assertMoney(input.amount, 'amount')
+    if (input.quantity !== undefined && input.quantity !== '') assertQuantity(input.quantity)
     return withTenant(this.db, actor.tenantId, async (tx) => {
       await assertCanManage(tx, actor, input.projectId)
       const { rows } = await tx.query<{ id: string }>(
         `INSERT INTO cost_entries
-           (tenant_id, project_id, budget_code_id, kind, amount, description, source_record_id, incurred_on, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::date, CURRENT_DATE), $9)
+           (tenant_id, project_id, budget_code_id, kind, amount, description, source_record_id, incurred_on, created_by, quantity)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::date, CURRENT_DATE), $9, $10)
          RETURNING id`,
         [
           actor.tenantId,
@@ -218,6 +261,7 @@ export class BudgetService {
           input.sourceRecordId ?? null,
           input.incurredOn ?? null,
           actor.userId,
+          input.quantity === undefined || input.quantity === '' ? null : input.quantity,
         ],
       )
       return { id: rows[0]?.id as string }
@@ -265,6 +309,73 @@ export class BudgetService {
           pendingCost: money(r['pending_cost']),
           projectedCost: money(r['projected_cost']),
           projectedOverUnder: money(r['projected_over_under']),
+        })),
+      }
+    })
+  }
+
+  /**
+   * What is actually behind a budget line.
+   *
+   * A budget screen that shows only the rolled-up total invites the one
+   * mistake that is expensive to unwind: somebody sees $40,000 actual against
+   * a line, does not recognise it, and enters the invoice they are holding a
+   * second time. The posting worker writes cost entries from records; a person
+   * writes them by hand; both land in the same column and the total cannot
+   * tell you which. So the entries are listed, each one saying where it came
+   * from, before anybody is asked to add another.
+   */
+  async costs(
+    actor: Actor,
+    projectId: string,
+    filter: { budgetCodeId?: string } = {},
+  ): Promise<{ entries: CostEntryView[] }> {
+    return withTenant(this.db, actor.tenantId, async (tx) => {
+      if (!(await costVisibility(tx, actor, projectId))) {
+        throw new PermissionDeniedError('You cannot see cost figures on this project', { tool: 'budget' })
+      }
+      const { rows } = await tx.query<Record<string, string | null>>(
+        `SELECT ce.id, ce.budget_code_id, bc.display AS budget_code, ce.kind, ce.amount,
+                ce.quantity, ce.description,
+                to_char(ce.incurred_on, 'YYYY-MM-DD') AS incurred_on,
+                ce.source_record_id, ce.source_event, ce.source_invoice_id,
+                r.designation AS source_designation, r.title AS source_title,
+                inv.number AS source_invoice_number,
+                u.name AS entered_by
+           FROM cost_entries ce
+           JOIN budget_codes bc ON bc.id = ce.budget_code_id AND bc.tenant_id = ce.tenant_id
+           LEFT JOIN records r ON r.id = ce.source_record_id AND r.tenant_id = ce.tenant_id
+           LEFT JOIN invoices inv ON inv.id = ce.source_invoice_id AND inv.tenant_id = ce.tenant_id
+           LEFT JOIN users u ON u.id = ce.created_by AND u.tenant_id = ce.tenant_id
+          WHERE ce.tenant_id = $1 AND ce.project_id = $2
+            AND ($3::uuid IS NULL OR ce.budget_code_id = $3)
+          ORDER BY ce.incurred_on DESC, ce.created_at DESC`,
+        [actor.tenantId, projectId, filter.budgetCodeId ?? null],
+      )
+      return {
+        entries: rows.map((r) => ({
+          id: r['id'] as string,
+          budgetCodeId: r['budget_code_id'] as string,
+          budgetCode: r['budget_code'] as string,
+          kind: r['kind'] as CostEntryView['kind'],
+          amount: r['amount'] as string,
+          quantity: r['quantity'] ?? null,
+          description: r['description'] ?? '',
+          incurredOn: r['incurred_on'] as string,
+          sourceRecordId: r['source_record_id'] ?? null,
+          // A record it was posted from, named the way the job names it, so
+          // "SC-004" is recognisable without opening anything.
+          source: r['source_designation']
+            ? `${r['source_designation']}${r['source_title'] ? ` · ${r['source_title']}` : ''}`
+            : r['source_invoice_number']
+              ? `Payment application ${r['source_invoice_number']}`
+              : null,
+          // Written by the product rather than typed by the person named in
+          // created_by. An approved payment application counts: the approver
+          // is on the row, but they did not enter the cost, and telling them
+          // apart is the entire reason this list exists.
+          posted: r['source_event'] !== null || r['source_invoice_id'] !== null,
+          enteredBy: r['entered_by'] ?? null,
         })),
       }
     })

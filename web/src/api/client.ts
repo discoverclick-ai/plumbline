@@ -131,6 +131,30 @@ export interface BudgetLineView {
   projectedOverUnder: string | null
 }
 
+/**
+ * One recorded dollar and where it came from.
+ *
+ * `posted` is the field that matters on screen. An entry the posting worker
+ * wrote off a record keeps itself current and must not be typed again; an
+ * entry a person typed is theirs to correct. The rolled-up total on a budget
+ * line cannot tell those apart, which is how the same invoice gets entered
+ * twice.
+ */
+export interface CostEntryView {
+  id: string
+  budgetCodeId: string
+  budgetCode: string
+  kind: 'committed' | 'actual' | 'pending' | 'forecast'
+  amount: string
+  quantity: string | null
+  description: string
+  incurredOn: string
+  sourceRecordId: string | null
+  source: string | null
+  posted: boolean
+  enteredBy: string | null
+}
+
 export interface CommitmentView {
   commitmentId: string
   kind: 'subcontract' | 'purchase_order'
@@ -879,6 +903,25 @@ export class ApiClient {
     input: { budgetCodeId: string; description?: string; originalAmount: string; unitOfMeasure?: string; originalQuantity?: string },
   ): Promise<unknown> {
     return this.request('POST', `/projects/${projectId}/budget/lines`, input)
+  }
+
+  costs(projectId: string, budgetCodeId?: string): Promise<{ entries: CostEntryView[] }> {
+    const query = budgetCodeId ? `?budgetCodeId=${encodeURIComponent(budgetCodeId)}` : ''
+    return this.request('GET', `/projects/${projectId}/costs${query}`)
+  }
+
+  recordCost(
+    projectId: string,
+    input: {
+      budgetCodeId: string
+      kind: 'committed' | 'actual' | 'pending' | 'forecast'
+      amount: string
+      quantity?: string
+      description?: string
+      incurredOn?: string
+    },
+  ): Promise<{ id: string }> {
+    return this.request('POST', `/projects/${projectId}/costs`, input)
   }
 
   createCommitment(

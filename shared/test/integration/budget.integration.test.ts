@@ -204,6 +204,72 @@ describe('numbers nobody stored', () => {
   })
 })
 
+describe('what is behind a line', () => {
+  it('names where every dollar came from', async () => {
+    // The point of the listing. A budget line says $300,000 actual against
+    // electrical; that total cannot tell a project manager whether the
+    // invoice in their hand is already one of those dollars. Entering it
+    // twice is the natural mistake and it is expensive to unwind.
+    const { entries } = await budget.costs(pm, projectId, { budgetCodeId: electrical })
+    expect(entries.map((e) => e.kind).sort()).toEqual(['actual', 'committed', 'pending'])
+
+    const actual = entries.find((e) => e.kind === 'actual')
+    expect(actual?.amount).toBe('300000.00')
+    expect(actual?.description).toBe('Invoices 1 through 3')
+    // Typed by a person, so it is theirs to correct and nothing will keep
+    // it current. The posting worker's entries say the opposite.
+    expect(actual?.posted).toBe(false)
+    expect(actual?.enteredBy).toBe('Ari Doss')
+    expect(actual?.source).toBeNull()
+  })
+
+  it('filters to the code asked for', async () => {
+    const all = await budget.costs(pm, projectId)
+    const one = await budget.costs(pm, projectId, { budgetCodeId: concreteLabor })
+    expect(all.entries.length).toBeGreaterThan(one.entries.length)
+    expect(one.entries.every((e) => e.budgetCodeId === concreteLabor)).toBe(true)
+  })
+
+  it('records the units placed, not just the dollars', async () => {
+    // This column travelled nowhere for a while. The budget view rolls
+    // quantity_to_date up from actual-kind entries, so with nothing writing
+    // it the one number a superintendent is shown INSTEAD of dollars summed
+    // to zero forever: "none installed" on a job that was half built.
+    await budget.recordCost(pm, {
+      projectId,
+      budgetCodeId: concreteLabor,
+      kind: 'actual',
+      amount: '18400.00',
+      quantity: '240.5',
+      description: 'Slab on grade, pour 2',
+    })
+    const view = await budget.summary(superintendent, projectId)
+    const line = view.lines.find((l) => l.budgetCodeId === concreteLabor)
+    expect(line?.quantityToDate).toBe('240.5000')
+    // And still no dollars, which is the whole reason the column matters.
+    expect(line?.actualCost).toBeNull()
+  })
+
+  it('refuses a quantity that is not one', async () => {
+    await expect(
+      budget.recordCost(pm, {
+        projectId,
+        budgetCodeId: concreteLabor,
+        kind: 'actual',
+        amount: '1.00',
+        quantity: '240.5 CY',
+      }),
+    ).rejects.toBeInstanceOf(ValidationError)
+  })
+
+  it('shows a superintendent no entries at all', async () => {
+    // Not an empty list. The summary nulls the money and keeps the rows
+    // because a budget tab has to open; a list of individual costs has no
+    // such excuse, and every row of it is a dollar figure.
+    await expect(budget.costs(superintendent, projectId)).rejects.toBeInstanceOf(PermissionDeniedError)
+  })
+})
+
 describe('who may see the money', () => {
   it('shows a superintendent the scopes and the quantities, and no dollars', async () => {
     // Quantities yes, cost figures no. Putting a job's margin on a jobsite

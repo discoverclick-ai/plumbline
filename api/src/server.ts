@@ -539,6 +539,16 @@ const ROUTES: Route[] = [
     return { ok: true }
   }),
 
+  // Listed before anything is added, because the rolled-up total on the
+  // budget line cannot tell a person which of those dollars the posting
+  // worker already wrote off an invoice. Without this the natural mistake is
+  // to enter the same invoice twice.
+  route('GET', '/projects/:projectId/costs', async ({ actor, params, query, budget }) =>
+    budget.costs(actor, params['projectId'] as string, {
+      ...(query.get('budgetCodeId') ? { budgetCodeId: query.get('budgetCodeId') as string } : {}),
+    }),
+  ),
+
   route('POST', '/projects/:projectId/costs', async ({ actor, params, body, budget }) =>
     budget.recordCost(actor, {
       projectId: params['projectId'] as string,
@@ -546,6 +556,7 @@ const ROUTES: Route[] = [
       kind: body['kind'] as 'committed' | 'actual' | 'pending' | 'forecast',
       amount: String(body['amount'] ?? ''),
       description: body['description'] as string | undefined,
+      ...(body['quantity'] ? { quantity: String(body['quantity']) } : {}),
       ...(body['sourceRecordId'] ? { sourceRecordId: body['sourceRecordId'] as string } : {}),
       ...(body['incurredOn'] ? { incurredOn: body['incurredOn'] as string } : {}),
     }),

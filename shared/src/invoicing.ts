@@ -263,15 +263,27 @@ export class InvoicingService {
       // because a payment the job cost report never saw is how a project shows
       // a profit it does not have.
       await tx.query(
+        // Naming the invoice is not bookkeeping tidiness. Written with a
+        // NULL source and the approver in created_by, this entry looked
+        // exactly like something a person typed, so a PM reading the line
+        // had no way to tell the invoice in their hand was already in the
+        // number — and entering it again is the expensive mistake.
         `INSERT INTO cost_entries
-           (tenant_id, project_id, budget_code_id, kind, amount, description, source_record_id, created_by)
+           (tenant_id, project_id, budget_code_id, kind, amount, description, source_invoice_id, created_by)
          SELECT il.tenant_id, i.project_id, cl.budget_code_id, 'actual',
-                il.amount - il.retainage_amount + il.retainage_released,
-                'Invoice ' || i.number, NULL, $3
+                SUM(il.amount - il.retainage_amount + il.retainage_released),
+                'Invoice ' || i.number, i.id, $3
            FROM invoice_lines il
            JOIN invoices i ON i.id = il.invoice_id
            JOIN commitment_lines cl ON cl.id = il.commitment_line_id
-          WHERE i.tenant_id = $1 AND i.id = $2`,
+          WHERE i.tenant_id = $1 AND i.id = $2
+          -- One entry per code, not per invoice line. An invoice routinely
+          -- bills two commitment lines that carry the same budget code, and
+          -- splitting those into two identical-looking rows tells a reader
+          -- nothing except that they might be a duplicate. Summed, the row
+          -- means what it says: this is what this application put against
+          -- this code.
+          GROUP BY il.tenant_id, i.project_id, cl.budget_code_id, i.number, i.id`,
         [actor.tenantId, invoiceId, actor.userId],
       )
     })

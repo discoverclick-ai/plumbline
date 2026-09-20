@@ -4,6 +4,7 @@ import { ToolLandingPage } from '../layouts/index.js'
 import { useSession } from '../session/SessionProvider.tsx'
 import { Banner, Button, Card, Pill, Spinner, Table, Tabs } from '../ui/index.js'
 import { BudgetSetup } from './BudgetSetup.tsx'
+import { CostEntry } from './CostEntry.tsx'
 import { NewCommitment } from './NewCommitment.tsx'
 
 /**
@@ -56,6 +57,7 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
   const [lines, setLines] = useState<BudgetLineView[]>([])
   const [costsVisible, setCostsVisible] = useState(true)
   const [commitments, setCommitments] = useState<CommitmentView[] | null>([])
+  const [openLine, setOpenLine] = useState<string | null>(null)
   const [openCommitment, setOpenCommitment] = useState<CommitmentView | null>(null)
   const [editing, setEditing] = useState(false)
   const [reloadToken, setReloadToken] = useState(0)
@@ -98,6 +100,11 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
   }, [api, projectId, reloadToken])
 
   const overBudget = lines.filter((line) => line.projectedOverUnder?.startsWith('-'))
+  // Looked up rather than held, so a reload cannot leave the open panel
+  // showing figures the table has already moved past. A stale panel is how
+  // the same cost gets entered twice, which is the one mistake this whole
+  // thing exists to prevent.
+  const openLineRow = lines.find((line) => line.budgetLineId === openLine) ?? null
 
   return (
     <ToolLandingPage
@@ -154,6 +161,17 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
           <Table
             rows={lines}
             rowKey={(row) => row.budgetLineId}
+            // Opening a line is how cost gets entered by hand. Not every
+            // dollar on a job arrives through a record the posting worker can
+            // read: a T&M ticket settled in the field, a rental, a figure
+            // carried across mid-job. With no way in, the actual column stays
+            // wrong and every projection built on it is wrong too.
+            {...(costsVisible
+              ? {
+                  onRowClick: (row: BudgetLineView) =>
+                    setOpenLine((current) => (current === row.budgetLineId ? null : row.budgetLineId)),
+                }
+              : {})}
             empty={
               <p style={{ margin: 0, color: 'var(--ink-muted)' }}>
                 No budget lines yet. A line is a budget code with a number against it.
@@ -337,6 +355,16 @@ export function Budget({ projectId, projectName }: { projectId: string; projectN
           />
         )}
       </Card>
+
+      {openLineRow ? (
+        <Card title={`${openLineRow.budgetCode} · ${openLineRow.description}`}>
+          <CostEntry
+            projectId={projectId}
+            line={openLineRow}
+            onRecorded={() => setReloadToken((n) => n + 1)}
+          />
+        </Card>
+      ) : null}
 
       {openCommitment ? (
         <Billing

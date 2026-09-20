@@ -223,6 +223,17 @@ describe('nothing gets paid without a lien waiver', () => {
     // profit it does not have.
     const line = (await budget.summary(gc, projectId)).lines.find((l) => l.budgetCode === '26 00 00.S')
     expect(line?.actualCost).toBe('252000.00')
+
+    // And it says where it came from. This entry used to be written with a
+    // NULL source and the approver in created_by, which made an approved
+    // payment application indistinguishable from something a person typed.
+    // A project manager who does not recognise the figure and cannot see
+    // what caused it enters the invoice again, and the job reads over
+    // budget until somebody unpicks it.
+    const { entries } = await budget.costs(gc, projectId)
+    const posted = entries.find((e) => e.amount === '252000.00')
+    expect(posted?.posted).toBe(true)
+    expect(posted?.source).toBe('Payment application 1')
   })
 
   it('will not pay something nobody approved', async () => {
