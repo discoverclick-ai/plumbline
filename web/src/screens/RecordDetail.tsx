@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ApiError, type ActivityView, type RecordView } from '../api/client.js'
 import { DetailPage } from '../layouts/index.js'
-import { useSession } from '../session/SessionProvider.tsx'
+import { atLeast, useSession } from '../session/SessionProvider.tsx'
 import {
   Banner,
   Button,
@@ -14,6 +14,7 @@ import {
   Textarea,
   statusTone,
 } from '../ui/index.js'
+import { Attachments } from './Attachments.tsx'
 import { floatText, startsIn } from './Lookahead.tsx'
 import { RecordFields, toFieldValues, toRequestBody, type FieldValues } from './RecordFields.tsx'
 import type { RecordComment, RecordStateChange } from '@plumbline/shared'
@@ -35,7 +36,12 @@ export function RecordDetail({
   recordId: string
   onBack?: () => void
 }) {
-  const { api, types } = useSession()
+  const { api, types, level, me } = useSession()
+  const [attachmentCount, setAttachmentCount] = useState<number | null>(null)
+  // A participant carries a user id and nothing else, so every name on this
+  // screen is resolved against the project roster. Without it the record says
+  // who holds it in UUIDs, which is to say it does not say.
+  const [people, setPeople] = useState<{ userId: string; name: string; organization: string }[]>([])
   const [view, setView] = useState<RecordView | null>(null)
   const [history, setHistory] = useState<{ states: RecordStateChange[]; comments: RecordComment[] } | null>(null)
   const [tab, setTab] = useState('details')
@@ -53,6 +59,16 @@ export function RecordDetail({
       const [record, past] = await Promise.all([api.record(recordId), api.history(recordId)])
       setView(record)
       setHistory(past)
+      // Both may refuse, and neither refusal is an error on this screen: a
+      // record still reads without a roster and without a file list.
+      void api
+        .members(record.record.projectId)
+        .then((r) => setPeople(r.members))
+        .catch(() => setPeople([]))
+      void api
+        .attachments(recordId)
+        .then((r) => setAttachmentCount(r.attachments.length))
+        .catch(() => setAttachmentCount(null))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load this record')
     }
@@ -160,12 +176,14 @@ export function RecordDetail({
       title={`${view.record.designation} · ${view.record.title}`}
       status={<Pill tone={statusTone(view.record.status, state?.terminal)}>{view.statusLabel}</Pill>}
       banner={error && <Banner tone="danger">{error}</Banner>}
+      aside={tab === 'details' ? <Facts view={view} people={people} /> : undefined}
       tabs={
         <Tabs
           active={tab}
           onSelect={setTab}
           tabs={[
             { key: 'details', label: 'Details' },
+            { key: 'attachments', label: 'Attachments', badge: attachmentCount ?? 0 },
             { key: 'activity', label: 'Activity', badge: history?.states.length ?? 0 },
           ]}
         />
@@ -190,6 +208,15 @@ export function RecordDetail({
         </>
       }
     >
+      {tab === 'attachments' && (
+        <Attachments
+          recordId={recordId}
+          // Attaching is the same right as commenting: anybody who can act on
+          // the record can put the sketch that answers it on the record.
+          canAttach={atLeast(level(view.type.toolKey), 'standard') || view.assignment?.holderUserId === me?.user?.id}
+        />
+      )}
+
       {tab === 'details' && (
         <>
           {view.assignment && (
@@ -375,5 +402,116 @@ export function RecordDetail({
         </Tearsheet>
       )}
     </DetailPage>
+  )
+}
+
+/**
+ * The facts a person wants before they read a word of the body.
+ *
+ * Who holds it, what they are meant to do, when it is due, how long it has
+ * been sitting and who raised it. This was a single accent banner carrying
+ * the expected action, which answered about a third of that; the rest was on
+ * the record and simply not shown, so somebody deciding whether to answer an
+ * RFI today had to open the activity tab to find out it was raised in March.
+ *
+ * Days old is computed rather than stored, and it is the number people argue
+ * about in a claim: "this sat with the architect for forty-one days" is the
+ * whole of a delay argument, and it has to be visible without arithmetic.
+ */
+function Facts({
+  view,
+  people,
+}: {
+  view: RecordView
+  people: { userId: string; name: string; organization: string }[]
+}) {
+  const nameOf = (userId: string | null | undefined): string | null =>
+    userId ? (people.find((p) => p.userId === userId)?.name ?? null) : null
+
+  const overdue =
+    view.assignment?.dueAt !== null &&
+    view.assignment?.dueAt !== undefined &&
+    Date.parse(view.assignment.dueAt) < Date.now()
+
+  const items: { label: string; value: ReactNode }[] = [
+    {
+      label: 'Ball in court',
+      value: view.assignment ? (
+        <>{nameOf(view.assignment.holderUserId) ?? 'Somebody on this job'}</>
+      ) : (
+        <span style={{ color: 'var(--ink-faint)' }}>nobody</span>
+      ),
+    },
+    {
+      label: 'Due',
+      value: view.assignment?.dueAt ? (
+        <span style={{ color: overdue ? 'var(--danger)' : undefined, fontWeight: overdue ? 650 : undefined }}>
+          {new Date(view.assignment.dueAt).toLocaleDateString()}
+          {overdue ? ' · overdue' : ''}
+        </span>
+      ) : (
+        <span style={{ color: 'var(--ink-faint)' }}>none set</span>
+      ),
+    },
+    {
+      label: 'Days open',
+      value: (
+        <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+          {Math.max(0, Math.floor((Date.now() - Date.parse(view.record.createdAt)) / 86_400_000))}
+        </span>
+      ),
+    },
+    {
+      label: 'Raised by',
+      value: nameOf(view.participants.find((p) => p.role === 'creator')?.userId) ?? (
+        <span style={{ color: 'var(--ink-faint)' }}>—</span>
+      ),
+    },
+    { label: 'Raised on', value: new Date(view.record.createdAt).toLocaleDateString() },
+  ]
+
+  return (
+    <div
+      style={{
+        padding: 'var(--space-4)',
+        background: 'var(--surface)',
+        border: '1px solid var(--line)',
+        borderRadius: 10,
+        display: 'grid',
+        gap: 'var(--space-3)',
+      }}
+    >
+      {items.map((item) => (
+        // Label above value rather than beside it. A name and an organisation
+        // do not fit in half a 320px column, and a wrapped value under a
+        // right-aligned label is harder to scan than either.
+        <div key={item.label}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--ink-muted)' }}>
+            {item.label}
+          </div>
+          <div style={{ marginTop: 2, fontWeight: 550 }}>{item.value}</div>
+        </div>
+      ))}
+
+      {/*
+        Everybody on the record, not just whoever holds it. "Who else is going
+        to see this" is a question people ask before they write an answer.
+      */}
+      {view.participants.length > 0 ? (
+        <div style={{ borderTop: '1px solid var(--line)', paddingTop: 'var(--space-3)' }}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--ink-muted)' }}>
+            On this record
+          </div>
+          <div style={{ marginTop: 6, display: 'grid', gap: 4 }}>
+            {view.participants.map((participant) => (
+              <div key={participant.id} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                <span>{nameOf(participant.userId) ?? 'Somebody on this job'}</span>
+                <span style={{ fontSize: 12, color: 'var(--ink-muted)' }}>{participant.role}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
   )
 }

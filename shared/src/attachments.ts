@@ -29,6 +29,8 @@ export interface AttachmentView {
   contentType: string
   byteSize: number
   uploadedBy: string
+  /** Null only where the account has since been removed. */
+  uploadedByName: string | null
   createdAt: Date
 }
 

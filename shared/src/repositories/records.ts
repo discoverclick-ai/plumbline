@@ -615,6 +615,7 @@ export interface AttachmentRow {
   contentType: string
   byteSize: number
   uploadedBy: string
+  uploadedByName: string | null
   createdAt: Date
 }
 
@@ -627,6 +628,7 @@ function toAttachment(row: {
   content_type: string
   byte_size: string | number
   uploaded_by: string
+  uploaded_by_name?: string | null
   created_at: Date
 }): AttachmentRow {
   return {
@@ -635,6 +637,7 @@ function toAttachment(row: {
     filename: row.filename,
     contentType: row.content_type,
     byteSize: Number(row.byte_size),
+    uploadedByName: row.uploaded_by_name ?? null,
     uploadedBy: row.uploaded_by,
     createdAt: row.created_at,
   }
@@ -676,9 +679,15 @@ export async function listAttachments(
   input: { tenantId: string; recordId: string },
 ): Promise<AttachmentRow[]> {
   const { rows } = await db.query(
-    `SELECT ${ATTACHMENT_COLUMNS} FROM record_attachments
-      WHERE tenant_id = $1 AND record_id = $2
-      ORDER BY created_at`,
+    // The uploader's NAME, not their id. Everything about an attachment on a
+    // job is about provenance — who put this drawing here and when — and a
+    // UUID in that column answers neither question.
+    `SELECT a.id, a.record_id, a.filename, a.content_type, a.byte_size, a.uploaded_by,
+            a.created_at, u.name AS uploaded_by_name
+       FROM record_attachments a
+       LEFT JOIN users u ON u.id = a.uploaded_by AND u.tenant_id = a.tenant_id
+      WHERE a.tenant_id = $1 AND a.record_id = $2
+      ORDER BY a.created_at`,
     [input.tenantId, input.recordId],
   )
   return rows.map((r) => toAttachment(r as never))

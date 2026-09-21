@@ -348,6 +348,138 @@ describe('every service can be called by something', () => {
   })
 })
 
+/**
+ * The same rule, one layer further out.
+ *
+ * A route with no client is the same failure as a service with no route, and
+ * the product had a whole subsystem in that state: record attachments had a
+ * service, routes to upload, list and download, integration tests over all
+ * three, and not one line in the web client that called any of them. A record
+ * could hold the sketch that answers the RFI and no screen could put one
+ * there.
+ *
+ * So the check is mechanical: every path the API serves is either fetched by
+ * the web client or named here as deliberately not. The exemptions are the
+ * things a browser genuinely never calls.
+ */
+const NOT_FOR_THE_BROWSER = new Set([
+  // The MCP surface. A customer's agent speaks this; the web client has no
+  // reason to, and giving it one would mean the browser could ask for work
+  // the agent gate is there to mediate.
+  '/mcp/tools',
+  '/mcp/call',
+  // The device sync protocol, for a client that keeps a local copy and
+  // reconciles. The web app is online-only and pulls live, so these are for
+  // the field client that does not exist yet rather than for this one.
+  '/sync/devices',
+  '/sync/pull',
+  '/sync/push',
+])
+
+/**
+ * Routes with a service, a test and no screen. The honest backlog.
+ *
+ * Every one of these is a working subsystem a customer cannot reach, which is
+ * the gap between what this product does and what it looks like it does. They
+ * are listed rather than exempted, and the assertion below is a RATCHET: a
+ * new unreachable route fails the build, and an entry that has since been
+ * wired up fails it too, so the list can only shrink and cannot quietly
+ * become a graveyard.
+ */
+const NOT_YET_IN_THE_CLIENT = [
+  // Capture: reading a file without proposing a record off it, and what the
+  // pipeline has cost.
+  '/captures/:captureId/transcribe',
+  '/projects/:projectId/capture-stats',
+  // Money: revising a budget line, change orders against a commitment,
+  // releasing retainage, and the accounting export.
+  '/budget-lines/:budgetLineId/revisions',
+  '/commitments/:commitmentId/change-orders',
+  '/commitment-change-orders/:changeOrderId/execute',
+  '/invoice-lines/:invoiceLineId/release-retainage',
+  '/projects/:projectId/erp-export',
+  // Bringing a job across from Procore.
+  '/projects/:projectId/imports/procore/rfis',
+  // Specifications: the book, its sections, and pulling submittal
+  // requirements out of one.
+  '/projects/:projectId/specification-books',
+  '/specification-books/:bookId/sections',
+  '/specification-sections/:sectionId/extract',
+  // Photos: albums, and the photographs attached to a record.
+  '/photo-albums/:albumId/photos',
+  '/records/:recordId/photos',
+  // Contracts: where a clause came from, flowing a requirement down to a
+  // subcontract, and the obligations extracted from an instrument.
+  '/contracts/:documentId/lineage',
+  '/contracts/:documentId/flow-down',
+  '/projects/:projectId/obligations',
+  // The working calendar a deadline is counted against.
+  '/projects/:projectId/calendar',
+  '/projects/:projectId/calendar/holidays',
+]
+
+/**
+ * `/projects/:projectId/records` → a regex the client's own path must match.
+ *
+ * A parameter becomes `${...}`, and the whole thing may be written in a
+ * template literal or, where it has no parameters, in ordinary quotes. Both
+ * are how the client actually writes paths, and a pattern that insisted on
+ * backticks reported a dozen routes as unreachable that are called on every
+ * page load — a lint rule crying wolf gets muted, which is the same failure
+ * as one that never fires.
+ */
+function pathPattern(path: string): RegExp {
+  const source = path
+    .split('/')
+    .filter(Boolean)
+    .map((segment) =>
+      segment.startsWith(':')
+        ? '\\$\\{[^}]+\\}'
+        : segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+    )
+    .join('/')
+  // Ends at a quote, a query string, or another segment.
+  return new RegExp(`['"\`]?/${source}(['"\`]|\\?|/|\\$\\{)`)
+}
+
+describe('every route can be called by something', () => {
+  it('finds no API route the client cannot reach', () => {
+    const server = readFileSync(join(HERE, '..', '..', 'api', 'src', 'server.ts'), 'utf8')
+    const client = readFileSync(join(HERE, '..', '..', 'web', 'src', 'api', 'client.ts'), 'utf8')
+
+    const paths = [
+      ...new Set([...server.matchAll(/route\(\s*'[A-Z]+',\s*'([^']+)'/g)].map((m) => m[1] as string)),
+    ]
+    expect(paths.length).toBeGreaterThan(50)
+
+    const unreachable = paths.filter((path) => !NOT_FOR_THE_BROWSER.has(path) && !pathPattern(path).test(client))
+    const known = new Set(NOT_YET_IN_THE_CLIENT)
+
+    const surprises = unreachable.filter((path) => !known.has(path))
+    expect(
+      surprises,
+      `\n${surprises.join('\n')}\n\nA route with no client is a subsystem a customer cannot reach. Call it from the web client, or add it to NOT_YET_IN_THE_CLIENT with a reason.\n`,
+    ).toEqual([])
+  })
+
+  it('has no stale entries on the backlog', () => {
+    // The half of the ratchet that makes it one. Without this the list is a
+    // graveyard: routes get wired up, nobody removes them from here, and the
+    // number stops meaning anything.
+    const server = readFileSync(join(HERE, '..', '..', 'api', 'src', 'server.ts'), 'utf8')
+    const client = readFileSync(join(HERE, '..', '..', 'web', 'src', 'api', 'client.ts'), 'utf8')
+    const served = new Set([...server.matchAll(/route\(\s*'[A-Z]+',\s*'([^']+)'/g)].map((m) => m[1] as string))
+
+    const stale = NOT_YET_IN_THE_CLIENT.filter(
+      (path) => !served.has(path) || pathPattern(path).test(client),
+    )
+    expect(
+      stale,
+      `\n${stale.join('\n')}\n\nThese are reachable now, or no longer served. Delete them from NOT_YET_IN_THE_CLIENT.\n`,
+    ).toEqual([])
+  })
+})
+
 describe('a function handed a tenant id uses it', () => {
   it('finds nothing leaning on row-level security alone', () => {
     // Called through an arrow, not passed by reference: flatMap hands the

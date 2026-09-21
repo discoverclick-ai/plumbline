@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useIsNarrow } from '../ui/index.js'
 
 /**
  * The page templates.
@@ -27,6 +28,46 @@ const BODY: React.CSSProperties = {
   alignContent: 'start',
   overflowY: 'auto',
   flex: 1,
+}
+
+function DetailBody({
+  aside,
+  banner,
+  children,
+}: {
+  aside?: ReactNode
+  banner?: ReactNode
+  children: ReactNode
+}) {
+  const narrow = useIsNarrow(1100)
+  if (!aside) {
+    return (
+      <div style={{ ...BODY, maxWidth: 880, width: '100%' }}>
+        {banner}
+        {children}
+      </div>
+    )
+  }
+  return (
+    <div
+      style={{
+        ...BODY,
+        display: 'grid',
+        // The body takes the room and the facts take a fixed column, rather
+        // than both sharing it: a field label wrapping to two lines because
+        // the facts wanted a proportion of the width is a worse trade.
+        gridTemplateColumns: narrow ? 'minmax(0, 1fr)' : 'minmax(0, 1fr) 320px',
+        alignItems: 'start',
+        gap: 'var(--space-4)',
+      }}
+    >
+      <div style={{ display: 'grid', gap: 'var(--space-4)', alignContent: 'start', minWidth: 0 }}>
+        {banner}
+        {children}
+      </div>
+      <div style={{ display: 'grid', gap: 'var(--space-4)', alignContent: 'start', minWidth: 0 }}>{aside}</div>
+    </div>
+  )
 }
 
 export function ToolLandingPage({
@@ -89,6 +130,7 @@ export function DetailPage({
   banner,
   tabs,
   footer,
+  aside,
   children,
 }: {
   breadcrumbs?: ReactNode
@@ -98,6 +140,13 @@ export function DetailPage({
   tabs?: ReactNode
   /** The action bar. Populated from what the server says this actor may do. */
   footer?: ReactNode
+  /**
+   * The facts column, beside the body on a wide screen and above it on a
+   * narrow one. A record at 880px on a 1600px monitor is half a screen of
+   * whitespace, and the facts somebody wants first — who holds it, when it is
+   * due, how long it has sat — were scrolling away above the fields.
+   */
+  aside?: ReactNode
   children: ReactNode
 }) {
   return (
@@ -125,10 +174,9 @@ export function DetailPage({
         <div style={{ marginTop: 'var(--space-3)' }}>{tabs}</div>
       </header>
 
-      <div style={{ ...BODY, maxWidth: 880, width: '100%' }}>
-        {banner}
+      <DetailBody aside={aside} banner={banner}>
         {children}
-      </div>
+      </DetailBody>
 
       {footer && (
         <footer

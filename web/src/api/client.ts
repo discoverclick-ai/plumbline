@@ -410,6 +410,17 @@ export interface PortfolioProjectView {
   projectedOverUnder: string | null
 }
 
+export interface AttachmentListItem {
+  id: string
+  recordId: string
+  filename: string
+  contentType: string
+  byteSize: number
+  uploadedBy: string
+  uploadedByName: string | null
+  createdAt: string
+}
+
 /** A statute that reaches this job, running or not. */
 export interface StatutoryRuleView {
   deadlineType: string
@@ -1062,6 +1073,55 @@ export class ApiClient {
     projectId: string,
   ): Promise<{ started: number; skipped: { citation: string; reason: string }[]; unverified: { citation: string; summary: string }[] }> {
     return this.request('POST', `/projects/${projectId}/statutory-clocks/sweep`)
+  }
+
+  /**
+   * What is attached to a record.
+   *
+   * These routes existed with no client at all, which meant every attachment
+   * on the job was reachable by the API and by nothing a person could use.
+   */
+  attachments(recordId: string): Promise<{ attachments: AttachmentListItem[] }> {
+    return this.request('GET', `/records/${recordId}/attachments`)
+  }
+
+  /**
+   * Raw body, not multipart. The server reads the stream and takes the name
+   * from a header, so the filename is URI-encoded on the way out: a space or
+   * an accent in a header value is not legal otherwise, and jobsite files are
+   * named things like "RFI 14 — sketch.pdf".
+   */
+  async attach(recordId: string, file: File): Promise<AttachmentListItem> {
+    const response = await fetch(`${this.baseUrl}/records/${recordId}/attachments`, {
+      method: 'POST',
+      headers: {
+        'content-type': file.type || 'application/octet-stream',
+        'x-filename': encodeURIComponent(file.name),
+        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+      },
+      body: file,
+    })
+    const text = await response.text()
+    const payload: unknown = text.length > 0 ? JSON.parse(text) : {}
+    if (!response.ok) {
+      const error = payload as { error?: string; message?: string }
+      throw new ApiError(response.status, error.error ?? 'error', error.message ?? 'That file was refused')
+    }
+    return payload as AttachmentListItem
+  }
+
+  /**
+   * Fetched with the bearer token and handed over as an object URL. A plain
+   * link to the API would be unauthenticated and would download a 401.
+   */
+  async attachmentUrl(attachmentId: string): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/attachments/${attachmentId}`, {
+      headers: { ...(this.token ? { authorization: `Bearer ${this.token}` } : {}) },
+    })
+    if (!response.ok) {
+      throw new ApiError(response.status, 'attachment_failed', 'That file could not be downloaded')
+    }
+    return URL.createObjectURL(await response.blob())
   }
 
   portfolio(): Promise<{ projects: PortfolioProjectView[] }> {
