@@ -338,6 +338,61 @@ export class StatutoryService {
   }
 
   /**
+   * Which statutes reach this job, and whether anybody has checked them.
+   *
+   * A read, unlike `sweep`, which writes. The Lien & bond tab used to open
+   * onto an empty card, because the product ships with every rule unverified
+   * and an unverified rule starts no clock. Empty reads as "no deadlines
+   * apply to this job", which is the most dangerous sentence this subsystem
+   * could accidentally say: on federal work a first tier sub has ninety days
+   * to give bond notice whether or not this product knows the number.
+   *
+   * So the applicable rules are listed whether or not they run, with the
+   * verification on each one. A contractor who learns the deadline EXISTS has
+   * been given the valuable half even when the arithmetic is withheld.
+   */
+  async applicable(
+    actor: Actor,
+    projectId: string,
+  ): Promise<{ deadlineType: string; citation: string; summary: string; consequence: string; verifiedBy: string | null; verifiedAt: string | null }[]> {
+    return withTenant(this.db, actor.tenantId, async (tx) => {
+      const access = await loadAccess(tx, { userId: actor.userId, tenantId: actor.tenantId, projectId })
+      if (!hasLevel(access, 'contracts', 'read_only') && !access.isCompanyAdmin) {
+        throw new PermissionDeniedError('You cannot see the statutory deadlines on this project', {
+          tool: 'contracts',
+        })
+      }
+      // No facts recorded yet is not an error here: it is the ordinary state
+      // of a job nobody has set up, and the screen asks for them right above.
+      const { rows: factRows } = await tx.query<Record<string, unknown>>(
+        `SELECT jurisdiction, project_type, claimant_role::text AS claimant_role
+           FROM project_statutory_facts WHERE tenant_id = $1 AND project_id = $2`,
+        [actor.tenantId, projectId],
+      )
+      const facts = factRows[0]
+      if (!facts) return []
+
+      const { rows } = await tx.query<Record<string, unknown>>(
+        `SELECT deadline_type::text AS deadline_type, citation, summary, consequence, verified_by,
+                to_char(verified_at, 'YYYY-MM-DD') AS verified_at
+           FROM statutory_rules
+          WHERE jurisdiction = $1 AND project_type = $2 AND claimant_role = $3::claimant_role
+            AND superseded_on IS NULL
+          ORDER BY deadline_type`,
+        [facts['jurisdiction'], facts['project_type'], facts['claimant_role']],
+      )
+      return rows.map((r) => ({
+        deadlineType: r['deadline_type'] as string,
+        citation: r['citation'] as string,
+        summary: r['summary'] as string,
+        consequence: r['consequence'] as string,
+        verifiedBy: (r['verified_by'] as string | null) ?? null,
+        verifiedAt: (r['verified_at'] as string | null) ?? null,
+      }))
+    })
+  }
+
+  /**
    * Starts every clock the facts now support.
    *
    * Idempotent on (project, rule, start date), so running it after every edit

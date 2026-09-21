@@ -48,6 +48,7 @@ export * from './capture/eval.js'
 export * from './capture/interpreter.js'
 export * from './capture/pricing.js'
 export * from './capture/service.js'
+export * from './portfolio.js'
 export * from './capture/transcription.js'
 export { AnthropicInterpretationProvider, DEFAULT_MODEL } from './capture/providers/anthropic.js'
 export {

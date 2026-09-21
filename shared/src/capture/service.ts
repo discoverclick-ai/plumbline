@@ -82,6 +82,14 @@ export interface Proposal {
   createdAt: string
 }
 
+/**
+ * The phone's own name for a capture, so a retry is not a second capture.
+ *
+ * Optional, because a capture typed in a browser with a live connection
+ * needs no such thing. Present on everything that came out of an offline
+ * queue, where an ambiguous send — request arrived, response did not — is
+ * routine rather than exceptional.
+ */
 export interface RecordCaptureInput {
   projectId: string
   kind: Capture['kind']
@@ -93,6 +101,7 @@ export interface RecordCaptureInput {
   latitude?: number
   longitude?: number
   device?: Record<string, unknown>
+  clientKey?: string
 }
 
 export interface AcceptEdits {
@@ -349,8 +358,12 @@ export class CaptureService {
 
       const { rows } = await tx.query<CaptureRow>(
         `INSERT INTO captures (tenant_id, project_id, captured_by, kind, storage_key, content_type,
-                               byte_size, text, captured_at, latitude, longitude, device)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()), $10, $11, $12::jsonb)
+                               byte_size, text, captured_at, latitude, longitude, device, client_key)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, now()), $10, $11, $12::jsonb, $13)
+         -- The index is partial, so the predicate has to be repeated here or
+         -- Postgres cannot tell which index this conflict target means.
+         ON CONFLICT (tenant_id, captured_by, client_key) WHERE client_key IS NOT NULL
+           DO NOTHING
            RETURNING ${CAPTURE_COLUMNS}`,
         [
           actor.tenantId,
@@ -365,11 +378,27 @@ export class CaptureService {
           input.latitude ?? null,
           input.longitude ?? null,
           JSON.stringify(input.device ?? {}),
+          input.clientKey ?? null,
         ],
       )
       const row = rows[0]
-      if (!row) throw new Error('capture insert returned no row')
-      return toCapture(row)
+      if (row) return toCapture(row)
+
+      // DO NOTHING returns no row, which means this key is already here: the
+      // phone sent it, the response never arrived, and it is retrying. Hand
+      // back what is already stored rather than an error, because to the
+      // phone a 409 and a 500 look the same and both mean "keep retrying
+      // forever".
+      if (input.clientKey) {
+        const { rows: existing } = await tx.query<CaptureRow>(
+          `SELECT ${CAPTURE_COLUMNS} FROM captures
+            WHERE tenant_id = $1 AND captured_by = $2 AND client_key = $3`,
+          [actor.tenantId, actor.userId, input.clientKey],
+        )
+        const already = existing[0]
+        if (already) return toCapture(already)
+      }
+      throw new Error('capture insert returned no row')
     })
   }
 

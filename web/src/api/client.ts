@@ -386,6 +386,40 @@ export interface StatutoryClockView {
  * deadline is worse than none: a contractor relies on it and loses money
  * they have already earned.
  */
+/**
+ * A job as the company view shows it.
+ *
+ * Money is nullable per project, not per screen: the same person is routinely
+ * cleared for the numbers on their own jobs and not on the one they were added
+ * to for a single inspection.
+ */
+export interface PortfolioProjectView {
+  id: string
+  number: string
+  name: string
+  stage: string
+  city: string | null
+  stateCode: string | null
+  contractValue: string | null
+  openRecords: number
+  overdue: number
+  mine: number
+  dueSoon: number
+  lastActivityAt: string | null
+  currentBudget: string | null
+  projectedOverUnder: string | null
+}
+
+/** A statute that reaches this job, running or not. */
+export interface StatutoryRuleView {
+  deadlineType: string
+  citation: string
+  summary: string
+  consequence: string
+  verifiedBy: string | null
+  verifiedAt: string | null
+}
+
 export type StatutoryEventKind = 'notice_of_termination' | 'lien_recorded' | 'payment_due'
 
 export interface StatutoryEventView {
@@ -1028,6 +1062,14 @@ export class ApiClient {
     projectId: string,
   ): Promise<{ started: number; skipped: { citation: string; reason: string }[]; unverified: { citation: string; summary: string }[] }> {
     return this.request('POST', `/projects/${projectId}/statutory-clocks/sweep`)
+  }
+
+  portfolio(): Promise<{ projects: PortfolioProjectView[] }> {
+    return this.request('GET', '/portfolio')
+  }
+
+  statutoryRules(projectId: string): Promise<{ rules: StatutoryRuleView[] }> {
+    return this.request('GET', `/projects/${projectId}/statutory-rules`)
   }
 
   statutoryEvents(projectId: string): Promise<{ events: StatutoryEventView[] }> {

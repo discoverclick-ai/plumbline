@@ -7,6 +7,7 @@ import type {
   StatutoryClockView,
   StatutoryEventKind,
   StatutoryEventView,
+  StatutoryRuleView,
 } from '../api/client.js'
 import { ToolLandingPage } from '../layouts/index.js'
 import { useSession } from '../session/SessionProvider.tsx'
@@ -188,6 +189,7 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [readReport, setReadReport] = useState<string | null>(null)
+  const [statutoryRules, setStatutoryRules] = useState<StatutoryRuleView[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -200,12 +202,14 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
       // wrong answer this screen could give.
       api.clocks(projectId).catch(() => ({ clocks: null })),
       api.statutoryClocks(projectId).catch(() => ({ clocks: null })),
+      api.statutoryRules(projectId).catch(() => ({ rules: [] })),
     ])
-      .then(([docs, running, statute]) => {
+      .then(([docs, running, statute, applicable]) => {
         if (cancelled) return
         setDocuments(docs.documents)
         setClocks(running.clocks as ClockView[] | null)
         setStatutory(statute.clocks as StatutoryClockView[] | null)
+        setStatutoryRules(applicable.rules)
         setSelected((current) => current ?? docs.documents[0]?.id ?? null)
       })
       .catch((err: unknown) => {
@@ -312,7 +316,7 @@ export function Contracts({ projectId, projectName }: { projectId: string; proje
             projectId={projectId}
             onRecorded={() => void api.statutoryClocks(projectId).then((r) => setStatutory(r.clocks))}
           />
-          <StatutoryClocks clocks={statutory} />
+          <StatutoryClocks clocks={statutory} rules={statutoryRules} />
         </>
       ) : tab === 'clocks' && clocks !== null ? (
         <Card
@@ -1056,9 +1060,65 @@ function StatutoryEvents({ projectId, onRecorded }: { projectId: string; onRecor
   )
 }
 
-function StatutoryClocks({ clocks }: { clocks: StatutoryClockView[] }) {
+/**
+ * The deadlines on this job, running or not.
+ *
+ * This card used to render an empty box, because the product ships with every
+ * statutory rule unverified and an unverified rule starts no clock. Empty
+ * reads as "no deadlines apply to this job", which is the most dangerous
+ * sentence this subsystem could accidentally say: on federal work a first
+ * tier subcontractor has ninety days to give bond notice whether or not this
+ * product knows the number, and a contractor who reads a blank card and
+ * relies on it loses money they have already earned.
+ *
+ * So the applicable statutes are named whether or not their arithmetic is
+ * trusted. Telling somebody the deadline EXISTS is the valuable half even
+ * when the number is withheld.
+ */
+function StatutoryClocks({ clocks, rules }: { clocks: StatutoryClockView[]; rules: StatutoryRuleView[] }) {
+  const unverified = rules.filter((rule) => rule.verifiedAt === null)
   return (
     <Card title="Lien and bond deadlines">
+      {clocks.length === 0 && rules.length === 0 ? (
+        <p style={{ margin: 0, color: 'var(--ink-muted)' }}>
+          Record the jurisdiction and your place in the contract chain above, and the statutes that reach this job
+          will be listed here.
+        </p>
+      ) : null}
+
+      {unverified.length > 0 ? (
+        <Banner tone="warn">
+          {unverified.length} {unverified.length === 1 ? 'deadline applies' : 'deadlines apply'} to this job that
+          nobody has verified against the current statute, so no clock is running for
+          {unverified.length === 1 ? ' it' : ' them'}. The deadline exists either way. Have counsel confirm the
+          citations below and the clocks start.
+        </Banner>
+      ) : null}
+
+      {unverified.length > 0 ? (
+        <div style={{ display: 'grid', gap: 10, marginBottom: 10 }}>
+          {unverified.map((rule) => (
+            <article
+              key={rule.citation}
+              style={{
+                border: '1px dashed var(--line-strong)',
+                borderRadius: 10,
+                padding: 12,
+                background: 'var(--surface-sunken)',
+              }}
+            >
+              <header style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
+                <strong>{rule.deadlineType.replace(/_/g, ' ')}</strong>
+                <Pill tone="warn">not verified</Pill>
+              </header>
+              <p style={{ margin: '6px 0 0', fontSize: 13 }}>{rule.summary}</p>
+              <p style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--danger)' }}>{rule.consequence}</p>
+              <p style={{ margin: '6px 0 0', fontSize: 12, color: 'var(--ink-muted)' }}>{rule.citation}</p>
+            </article>
+          ))}
+        </div>
+      ) : null}
+
       <div style={{ display: 'grid', gap: 10 }}>
         {clocks.map((clock) => {
           const days = Math.round((Date.parse(`${clock.dueOn}T00:00:00Z`) - Date.now()) / 86_400_000)

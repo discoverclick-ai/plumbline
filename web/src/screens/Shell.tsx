@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { ProjectView } from '../api/client.js'
 import { Directory } from './Directory.tsx'
-import { ToolLandingPage } from '../layouts/index.js'
+import { AppShell } from '../layouts/AppShell.tsx'
+import { Portfolio as PortfolioBoard } from './Portfolio.tsx'
 import { atLeast, useSession } from '../session/SessionProvider.tsx'
 import { Banner, Button, Card, Field, Input, Pill, Spinner, Table, Tabs } from '../ui/index.js'
 import { BallInCourt } from './BallInCourt.tsx'
@@ -75,127 +76,93 @@ export function SignIn() {
   )
 }
 
+/**
+ * The company level: the portfolio, the directory, and whatever else belongs
+ * above a single job.
+ *
+ * A rail rather than a row of buttons in the header, for the same reason the
+ * project level has one: it is where somebody looks for "the other thing this
+ * product does", and it has room to grow without the header wrapping.
+ */
 export function Portfolio({ onOpenProject }: { onOpenProject: (project: ProjectView) => void }) {
   const { api, me, signOut } = useSession()
-  const [projects, setProjects] = useState<ProjectView[]>([])
-  const [loading, setLoading] = useState(true)
+  const [view, setView] = useState<'projects' | 'directory' | 'new'>('projects')
   const [error, setError] = useState<string | null>(null)
-  const [view, setView] = useState<'projects' | 'directory'>('projects')
-  const [starting, setStarting] = useState(false)
   const [number, setNumber] = useState('')
   const [name, setName] = useState('')
+  const [reloadToken, setReloadToken] = useState(0)
 
-  const reload = (): void => {
-    api
-      .projects()
-      .then((result) => setProjects(result.projects))
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Could not load projects'))
-      .finally(() => setLoading(false))
-  }
-
-  useEffect(reload, [api])
-
-  // The directory is a whole screen rather than a tab on this one, because
-  // adding companies and people is a different job from running a project
-  // and is done by different people.
-  if (view === 'directory') {
-    return (
-      <div>
-        <div style={{ padding: 'var(--space-3) var(--space-4)' }}>
-          <Button variant="ghost" onClick={() => setView('projects')}>
-            ← Projects
-          </Button>
-        </div>
-        <Directory />
-      </div>
-    )
-  }
+  const items = [
+    { key: 'projects', label: 'Projects' },
+    { key: 'directory', label: 'Directory' },
+    { key: 'new', label: 'Start a project' },
+  ]
 
   return (
-    <ToolLandingPage
-      title="Projects"
-      subtitle={me?.user ? `${me.user.organization}` : undefined}
-      actions={
+    <AppShell
+      brand={<strong style={{ fontSize: 15 }}>Plumbline</strong>}
+      context={<span style={{ color: 'var(--ink-muted)' }}>{me?.user?.organization ?? ''}</span>}
+      headerRight={
         <>
-          <Button variant="ghost" onClick={() => setView('directory')}>
-            Directory
+          {me?.user ? (
+            <span style={{ fontSize: 13, color: 'var(--ink-muted)' }}>{me.user.name}</span>
+          ) : null}
+          <Button variant="ghost" onClick={() => void signOut()}>
+            Sign out
           </Button>
-          <Button variant="ghost" onClick={() => setStarting((on) => !on)}>
-            {starting ? 'Cancel' : 'Start a project'}
-          </Button>
-          <Button onClick={() => void signOut()}>Sign out</Button>
         </>
       }
-      banner={error && <Banner tone="danger">{error}</Banner>}
+      items={items}
+      active={view}
+      onSelect={(key) => setView(key as 'projects' | 'directory' | 'new')}
     >
-      {starting ? (
-        <Card title="Start a project">
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
-              Number
-              <Input value={number} onChange={setNumber} placeholder="26-101" />
-            </label>
-            <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
-              Name
-              <Input value={name} onChange={setName} placeholder="Riverside Depot" />
-            </label>
-            <Button
-              disabled={number.trim() === '' || name.trim() === ''}
-              onClick={() => {
-                api
-                  .startProject({ number: number.trim(), name: name.trim() })
-                  .then(() => {
-                    setStarting(false)
-                    setNumber('')
-                    setName('')
-                    reload()
-                  })
-                  .catch((err: unknown) =>
-                    setError(err instanceof Error ? err.message : 'That project could not be started'),
-                  )
-              }}
-            >
-              Start it
-            </Button>
-          </div>
-        </Card>
-      ) : null}
-      <Card>
-        {loading ? (
-          <Spinner />
-        ) : (
-          <Table
-            rows={projects}
-            rowKey={(row) => row.id}
-            onRowClick={onOpenProject}
-            empty={
-              <p style={{ margin: 0, color: 'var(--ink-muted)' }}>
-                You are not on any projects yet. Someone with directory access can add you.
-              </p>
-            }
-            columns={[
-              { key: 'number', header: 'Number', width: '120px', render: (row) => <strong>{row.number}</strong> },
-              { key: 'name', header: 'Project', render: (row) => row.name },
-              {
-                key: 'stage',
-                header: 'Stage',
-                width: '200px',
-                render: (row) => <Pill>{row.stage.replace(/_/g, ' ')}</Pill>,
-              },
-              {
-                key: 'value',
-                header: 'Contract',
-                width: '140px',
-                render: (row) =>
-                  row.contract_value
-                    ? `$${Number(row.contract_value).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
-                    : '—',
-              },
-            ]}
+      <div style={{ padding: 'var(--space-5)', overflowY: 'auto', flex: 1, display: 'grid', gap: 'var(--space-4)', alignContent: 'start' }}>
+        {error ? <Banner tone="danger">{error}</Banner> : null}
+
+        {view === 'directory' ? <Directory /> : null}
+
+        {view === 'new' ? (
+          <Card title="Start a project">
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+                Number
+                <Input value={number} onChange={setNumber} placeholder="26-101" />
+              </label>
+              <label style={{ display: 'grid', gap: 4, fontSize: 12, color: 'var(--ink-muted)' }}>
+                Name
+                <Input value={name} onChange={setName} placeholder="Riverside Depot" />
+              </label>
+              <Button
+                variant="primary"
+                disabled={number.trim() === '' || name.trim() === ''}
+                onClick={() => {
+                  api
+                    .startProject({ number: number.trim(), name: name.trim() })
+                    .then(() => {
+                      setNumber('')
+                      setName('')
+                      setReloadToken((n) => n + 1)
+                      setView('projects')
+                    })
+                    .catch((err: unknown) =>
+                      setError(err instanceof Error ? err.message : 'That project could not be started'),
+                    )
+                }}
+              >
+                Start it
+              </Button>
+            </div>
+          </Card>
+        ) : null}
+
+        {view === 'projects' ? (
+          <PortfolioBoard
+            key={reloadToken}
+            onOpenProject={(p) => onOpenProject(p as ProjectView)}
           />
-        )}
-      </Card>
-    </ToolLandingPage>
+        ) : null}
+      </div>
+    </AppShell>
   )
 }
 
@@ -214,9 +181,16 @@ type ProjectTab =
     | 'inbox'
 
 export function ProjectShell({ project, onLeave }: { project: ProjectView; onLeave: () => void }) {
-  const { scopeToProject, loading, level } = useSession()
+  const { api, scopeToProject, loading, level, me, signOut } = useSession()
   const [tab, setTab] = useState<ProjectTab>('work')
   const [openRecordId, setOpenRecordId] = useState<string | null>(null)
+  // Counts on the rail. A badge beside "In your court" is the single most
+  // useful pixel on this screen, and a tab strip had nowhere to put one.
+  const [counts, setCounts] = useState<{ mine: number; overdue: number; inbox: number }>({
+    mine: 0,
+    overdue: 0,
+    inbox: 0,
+  })
 
   useEffect(() => {
     void scopeToProject(project.id)
@@ -225,10 +199,37 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id])
 
+  useEffect(() => {
+    let cancelled = false
+    // Both are permissioned and both may refuse, which is not an error here:
+    // a rail with no badge is correct for somebody who may not see the thing
+    // the badge would count.
+    void Promise.all([
+      api.ballInCourt({ projectId: project.id }).catch(() => ({ entries: [] })),
+      api.proposals(project.id).catch(() => ({ proposals: [] })),
+    ]).then(([court, inbox]) => {
+      if (cancelled) return
+      const entries = court.entries ?? []
+      setCounts({
+        mine: entries.filter((e) => e.holderUserId === me?.user?.id).length,
+        overdue: entries.filter((e) => e.overdue).length,
+        inbox: (inbox.proposals ?? []).length,
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [api, project.id, me?.user?.id, openRecordId])
+
   if (loading) return <Spinner label="Loading project" />
 
-  const tabs: { key: ProjectTab; label: string }[] = [
-    { key: 'work', label: 'In your court' },
+  const tabs: { key: ProjectTab; label: string; badge?: number; urgent?: boolean }[] = [
+    {
+      key: 'work',
+      label: 'In your court',
+      badge: counts.mine || undefined,
+      urgent: counts.overdue > 0,
+    },
     { key: 'records', label: 'Records' },
   ]
   // Most people on a job hold `none` here, and a tab that opens onto a
@@ -249,7 +250,9 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
   if (atLeast(level('project_team'), 'read_only') && atLeast(level('rfis'), 'standard')) {
     tabs.push({ key: 'chasing', label: 'Chasing' })
   }
-  if (atLeast(level('capture'), 'read_only')) tabs.push({ key: 'inbox', label: 'Capture inbox' })
+  if (atLeast(level('capture'), 'read_only')) {
+    tabs.push({ key: 'inbox', label: 'Capture inbox', badge: counts.inbox || undefined })
+  }
   if (atLeast(level('project_team'), 'read_only')) tabs.push({ key: 'team', label: 'Team' })
   // Same audience as chasing: this is the office's screen, about what the
   // field typed and the server could not keep.
@@ -258,50 +261,62 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <nav
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--space-4)',
-          padding: '0 var(--space-4)',
-          borderBottom: '1px solid var(--line)',
-          background: 'var(--surface)',
-          // At 390px the tabs do not fit. Scrolling sideways is honest; the
-          // alternative is a project number wrapped over two lines and a tab
-          // sliced in half at the edge.
-          overflowX: 'auto',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        <span style={{ flexShrink: 0 }}>
-          <Button variant="ghost" onClick={onLeave}>
-            ← {project.number}
-          </Button>
-        </span>
-        <Tabs
-          active={openRecordId ? '' : tab}
-          onSelect={(key) => {
-            setOpenRecordId(null)
-            setTab(key as ProjectTab)
+    <AppShell
+      brand={
+        <button
+          type="button"
+          onClick={onLeave}
+          style={{
+            appearance: 'none',
+            border: 'none',
+            background: 'transparent',
+            font: 'inherit',
+            fontWeight: 650,
+            fontSize: 15,
+            cursor: 'pointer',
+            padding: 0,
+            color: 'var(--ink)',
           }}
-          tabs={tabs}
-        />
-        {/*
-          In the project nav rather than on a screen of its own, because
-          searching is something people do in the middle of doing something
-          else. It looks across every job they are on, not just this one.
-        */}
-        <div style={{ marginLeft: 'auto', display: 'flex', minWidth: 200, paddingLeft: 'var(--space-3)' }}>
-          <SearchBox onOpenRecord={(recordId) => setOpenRecordId(recordId)} />
-        </div>
-      </nav>
-
+        >
+          Plumbline
+        </button>
+      }
+      context={
+        <span style={{ display: 'inline-flex', gap: 8, alignItems: 'baseline' }}>
+          <strong style={{ fontVariantNumeric: 'tabular-nums' }}>{project.number}</strong>
+          <span style={{ color: 'var(--ink-muted)' }}>{project.name}</span>
+        </span>
+      }
+      headerRight={
+        <>
+          {/*
+            In the header rather than on a screen of its own, because searching
+            is something people do in the middle of doing something else. It
+            looks across every job they are on, not just this one.
+          */}
+          <div style={{ display: 'flex', minWidth: 220 }}>
+            <SearchBox onOpenRecord={(recordId) => setOpenRecordId(recordId)} />
+          </div>
+          <Button variant="ghost" onClick={onLeave}>
+            All projects
+          </Button>
+          <Button variant="ghost" onClick={() => void signOut()}>
+            Sign out
+          </Button>
+        </>
+      }
+      items={tabs}
+      active={openRecordId ? '' : tab}
+      onSelect={(key) => {
+        setOpenRecordId(null)
+        setTab(key as ProjectTab)
+      }}
+    >
       {/*
-        A record opens underneath the project nav rather than replacing it.
-        Taking the tabs away leaves the Back button as the only way out, which
-        is how people end up using the browser's back button on a single-page
-        app and losing their place.
+        A record opens inside the frame rather than replacing it. Taking the
+        rail away leaves the Back button as the only way out, which is how
+        people end up using the browser's back button on a single-page app and
+        losing their place.
       */}
       {openRecordId ? (
         <RecordDetail recordId={openRecordId} onBack={() => setOpenRecordId(null)} />
@@ -323,6 +338,6 @@ export function ProjectShell({ project, onLeave }: { project: ProjectView; onLea
           {tab === 'inbox' && <CaptureInbox projectId={project.id} projectName={project.name} />}
         </>
       )}
-    </div>
+    </AppShell>
   )
 }

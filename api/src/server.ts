@@ -50,6 +50,7 @@ import {
   type Actor,
   type BlobStore,
   type Db,
+  PortfolioService,
   type InterpretationProvider,
   type TranscriptionProvider,
   type ParticipantRole,
@@ -100,6 +101,7 @@ interface RequestContext {
   clocks: ClockEngine
   claims: ClaimFileService
   statutory: StatutoryService
+  portfolio: PortfolioService
   drafter: NoticeDraftService
   photos: PhotoService
   specs: SpecificationService
@@ -389,6 +391,10 @@ const ROUTES: Route[] = [
       ...(body['latitude'] !== undefined ? { latitude: Number(body['latitude']) } : {}),
       ...(body['longitude'] !== undefined ? { longitude: Number(body['longitude']) } : {}),
       ...(body['device'] !== undefined ? { device: body['device'] as Record<string, unknown> } : {}),
+      // The phone's own name for this capture. Everything that came out of an
+      // offline queue carries one, and without it a retry after an ambiguous
+      // send becomes a second capture.
+      ...(body['clientKey'] !== undefined ? { clientKey: String(body['clientKey']) } : {}),
     }),
   ),
 
@@ -1233,6 +1239,17 @@ const ROUTES: Route[] = [
   // The three triggers this product does not witness. Without these routes
   // every rule hanging off a recorded lien, a served termination or a payment
   // falling due was skipped with a reason nobody could act on.
+  // Read-only, and listed whether or not a clock runs. An empty Lien & bond
+  // tab reads as "no deadlines apply to this job", which is the most
+  // dangerous thing this subsystem could accidentally say.
+  // The company view. Replaces a list of project names with the numbers that
+  // decide which job somebody opens.
+  route('GET', '/portfolio', async ({ actor, portfolio }) => portfolio.summary(actor)),
+
+  route('GET', '/projects/:projectId/statutory-rules', async ({ actor, params, statutory }) => ({
+    rules: await statutory.applicable(actor, params['projectId'] as string),
+  })),
+
   route('GET', '/projects/:projectId/statutory-events', async ({ actor, params, statutory }) => ({
     events: await statutory.events(actor, params['projectId'] as string),
   })),
@@ -1393,6 +1410,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
   const scheduleService = new ScheduleService(pool as Db)
   const claimFileService = new ClaimFileService(pool as Db)
   const statutoryService = new StatutoryService(pool as Db)
+  const portfolioService = new PortfolioService(pool as Db)
 
   // Same lazily-built provider pattern as the extractor: the SDK resolves
   // credentials in its constructor, and a deployment that never drafts a
@@ -1512,6 +1530,7 @@ export function createApiServer(pool: Pool, options: ApiServerOptions = {}): Ser
           schedule: scheduleService,
           claims: claimFileService,
           statutory: statutoryService,
+          portfolio: portfolioService,
           drafter: draftService,
           photos: photos(),
           specs: specService,
