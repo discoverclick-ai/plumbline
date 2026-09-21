@@ -254,9 +254,20 @@ export function Select(props: {
   onChange: (value: string) => void
   options: { value: string; label: string }[]
   placeholder?: string
+  /**
+   * For a control with no visible <label> beside it, which is every filter in
+   * a filter row. Without one a screen reader announces six dropdowns in a
+   * row as "combobox, combobox, combobox" and the row is unusable.
+   */
+  label?: string
 }) {
   return (
-    <select value={props.value} onChange={(e) => props.onChange(e.target.value)} style={CONTROL}>
+    <select
+      value={props.value}
+      onChange={(e) => props.onChange(e.target.value)}
+      aria-label={props.label}
+      style={CONTROL}
+    >
       <option value="">{props.placeholder ?? '—'}</option>
       {props.options.map((option) => (
         <option key={option.value} value={option.value}>
@@ -282,12 +293,23 @@ export function Table<Row>({
   rowKey,
   onRowClick,
   empty,
+  sort,
+  onSort,
 }: {
   columns: Column<Row>[]
   rows: Row[]
   rowKey: (row: Row) => string
   onRowClick?: (row: Row) => void
   empty?: ReactNode
+  /** The column currently ordering the rows, and which way. */
+  sort?: { key: string; desc: boolean }
+  /**
+   * Sorting belongs on the header, not on a row of buttons beside the table.
+   * Clicking a column to order by it is the one table interaction everybody
+   * already knows, and a separate control for it is a control people have to
+   * be shown.
+   */
+  onSort?: (key: string) => void
 }) {
   const narrow = useIsNarrow()
 
@@ -331,23 +353,33 @@ export function Table<Row>({
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
       <thead>
         <tr>
-          {columns.map((column) => (
+          {columns.map((column) => {
+            const sortable = onSort !== undefined
+            const active = sort?.key === column.key
+            return (
             <th
               key={column.key}
               scope="col"
+              aria-sort={active ? (sort?.desc ? 'descending' : 'ascending') : undefined}
+              onClick={sortable ? () => onSort(column.key) : undefined}
               style={{
                 textAlign: 'left',
                 padding: '8px 12px',
                 borderBottom: '1px solid var(--line)',
-                color: 'var(--ink-muted)',
+                color: active ? 'var(--ink)' : 'var(--ink-muted)',
                 fontSize: 12,
                 fontWeight: 650,
                 width: column.width,
+                cursor: sortable ? 'pointer' : undefined,
+                userSelect: sortable ? 'none' : undefined,
+                whiteSpace: 'nowrap',
               }}
             >
               {column.header}
+              {active ? <span aria-hidden="true">{sort?.desc ? ' ↓' : ' ↑'}</span> : null}
             </th>
-          ))}
+            )
+          })}
         </tr>
       </thead>
       <tbody>

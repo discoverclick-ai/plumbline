@@ -5,6 +5,7 @@ import { ToolLandingPage } from '../layouts/index.js'
 import { atLeast, useProjectScope, useSession } from '../session/SessionProvider.tsx'
 import { Banner, Button, Card, Field, Input, Pill, Select, Spinner, Table, Tabs, Tearsheet, statusTone } from '../ui/index.js'
 import { RecordFields, toRequestBody, type FieldValues } from './RecordFields.tsx'
+import { RecordList } from './RecordList.tsx'
 
 /**
  * The record list, for every tool.
@@ -143,34 +144,18 @@ export function ToolLanding({
         {loading ? (
           <Spinner label="Loading" />
         ) : (
-          <Table
-            rows={records}
-            rowKey={(row) => row.id}
-            onRowClick={(row) => onOpenRecord(row.id)}
+          <RecordList
+            type={type}
+            types={types}
+            records={records}
+            people={members}
+            currentUserId={me?.user?.id ?? null}
+            onOpenRecord={onOpenRecord}
             empty={
               <p style={{ color: 'var(--ink-muted)', margin: 0 }}>
                 No {type?.displayNamePlural.toLowerCase()} on this project yet.
               </p>
             }
-            columns={[
-              { key: 'designation', header: 'Number', width: '120px', render: (row) => <strong>{row.designation}</strong> },
-              { key: 'title', header: 'Title', render: (row) => row.title },
-              {
-                key: 'status',
-                header: 'Status',
-                width: '140px',
-                render: (row) => {
-                  const state = types.get(row.typeKey)?.states.find((s) => s.key === row.status)
-                  return <Pill tone={statusTone(row.status, state?.terminal)}>{state?.label ?? row.status}</Pill>
-                },
-              },
-              {
-                key: 'due',
-                header: 'Due',
-                width: '120px',
-                render: (row) => (row.dueAt ? new Date(row.dueAt).toLocaleDateString() : '—'),
-              },
-            ]}
           />
         )}
       </Card>
